@@ -139,13 +139,27 @@ const store = {
   set(k, v){ try { localStorage.setItem(k, v); } catch {} }
 };
 
-// band codes: 0 attention heads, 1 MLP neurons, 2 residual stream, 3 no signal (embed / lm head / vision)
-// +4 = MoE expert activation (visualized as a ring within MoE layers)
-const B_ATTN = 0, B_FFN = 1, B_RES = 2, B_SPEC = 3, B_MOE = 4;
-const BAND_COLOR = ['#2ff3ff', '#5ee08a', '#4a7fd8'];
-const BAND_NAME  = ['heads', 'neurons', 'residual'];
-const MOE_COLOR  = '#ff9d42';
-const SPECIAL_COLOR = { embed:'#ff9d42', out:'#e875d6', vis:'#a88bff' };
+// Continent types — each component is a "continent" on the globe
+const CT_EMBED   = 0;   // embedding
+const CT_ATTN    = 1;   // attention layers (one per layer or grouped)
+const CT_FFN     = 2;   // feed-forward / MLP
+const CT_RES     = 3;   // residual stream
+const CT_MOE     = 4;   // MoE experts
+const CT_OUT     = 5;   // output / lm head
+const CT_VIS     = 6;   // vision encoder
+const CT_OTHER   = 7;   // everything else
+
+const CONTINENT_COLOR = [
+  '#ff9d42',  // embed — warm orange
+  '#2ff3ff',  // attn  — cyan
+  '#5ee08a',  // ffn   — green
+  '#4a7fd8',  // res   — blue
+  '#ff6b6b',  // moe   — red
+  '#e875d6',  // out   — magenta
+  '#a88bff',  // vis   — violet
+  '#888888',  // other — gray
+];
+
 const SPECIAL_SLOT  = { embed:0, out:1, vis:2 };
 const COMPONENT_COLORS = [
   '#39d8ff', '#70e38a', '#ffd84d', '#ff9d42', '#ff5a88',
@@ -250,13 +264,11 @@ function formatBytes(bytes) {
   return `${(bytes / 1024).toFixed(0)} KiB`;
 }
 
-/* ───────────────────────── zone layout ─────────────────────────
-   The sphere is a map of the network:
-     vertical   : weight volume, bottom = input side, top = output side
-     inside a layer : attention | feed-forward | residual, by real weight bytes
-     inside a band  : S slices = real heads / neuron groups / channel groups
-   Everything is generated from the model's own numbers (layer count, per-layer
-   tensor bytes, head count), so it re-shapes itself for any model.            */
+/* ───────────────────────── zone layout — continents on a globe ─────────────────────────
+   Each tensor component becomes a "continent" whose vertical span ∝ its byte weight.
+   Within a continent, sub-components (heads / neurons / residual) are arranged
+   horizontally by byte ratio, like regions on a landmass.  No discrete rings —
+   everything flows together as a continuous globe.                                    */
 function layoutLayers() {
   const L = viz.L, S = viz.S;
   const comp = n => {
@@ -266,16 +278,20 @@ function layoutLayers() {
   const embedB = comp('embed'), outB = comp('output'), visB = comp('vision');
   const zones = [];
 
-  if (viz.vision && visB > 0) zones.push({ kind:'vis',   il:-1, bytes:visB,   color:SPECIAL_COLOR.vis   });
-  if (embedB > 0)             zones.push({ kind:'embed', il:-1, bytes:embedB, color:SPECIAL_COLOR.embed });
+  // Vision at the very top
+  if (viz.vision && visB > 0) zones.push({ kind:'vis',   il:-1, bytes:visB,   color:CONTINENT_COLOR[CT_VIS]   });
+  // Embedding at the very bottom
+  if (embedB > 0)             zones.push({ kind:'embed', il:-1, bytes:embedB, color:CONTINENT_COLOR[CT_EMBED] });
+  // Each layer is a continent band; within it, attn / ffn / residual are horizontal regions
   for (let i = 0; i < L; i++) {
     const p = viz.layerBytes[i] || { a: 1, f: 1, o: 1 };
-    zones.push({ kind:'layer', il:i, bytes:Math.max(1, p.a + p.f + p.o), parts:p, color:'#8fd8ff' });
+    zones.push({ kind:'layer', il:i, bytes:Math.max(1, p.a + p.f + p.o), parts:p, color:CONTINENT_COLOR[CT_ATTN] });
   }
-  if (outB > 0) zones.push({ kind:'out', il:-1, bytes:outB, color:SPECIAL_COLOR.out });
+  // Output at the very top (above embedding, below vision)
+  if (outB > 0) zones.push({ kind:'out', il:-1, bytes:outB, color:CONTINENT_COLOR[CT_OUT] });
 
-  // vertical span ∝ bytes (with a floor so thin zones stay visible)
-  const minV = 0.004;
+  // Vertical span ∝ bytes (with a floor so thin zones stay visible)
+  const minV = 0.003;
   const w = zones.map(z => Math.max(z.bytes, 1));
   const tot = w.reduce((a, b) => a + b, 0) || 1;
   const fr = w.map(x => Math.max(x / tot, minV));
@@ -284,15 +300,15 @@ function layoutLayers() {
   zones.forEach((z, i) => { z.v0 = acc; acc += fr[i] / fs; z.v1 = acc; });
   zones[zones.length - 1].v1 = 1;
 
-  // horizontal split inside a layer
+  // Horizontal split inside a layer continent: attn | ffn | residual by byte ratio
   for (const z of zones) {
-    if (z.kind !== 'layer') { z.slices = [{ band: B_SPEC, u0: 0, u1: 1 }]; continue; }
+    if (z.kind !== 'layer') { z.slices = [{ band: CT_EMBED, u0: 0, u1: 1 }]; continue; }
     const parts = [
-      { band: B_ATTN, bytes: z.parts.a, color: BAND_COLOR[B_ATTN] },
-      { band: B_FFN,  bytes: z.parts.f, color: BAND_COLOR[B_FFN]  },
-      { band: B_RES,  bytes: Math.max(z.parts.o, (z.parts.a + z.parts.f) * 0.22), color: BAND_COLOR[B_RES] }
+      { band: CT_ATTN, bytes: z.parts.a, color: CONTINENT_COLOR[CT_ATTN] },
+      { band: CT_FFN,  bytes: z.parts.f, color: CONTINENT_COLOR[CT_FFN]  },
+      { band: CT_RES,  bytes: Math.max(z.parts.o, (z.parts.a + z.parts.f) * 0.22), color: CONTINENT_COLOR[CT_RES] }
     ];
-    const minU = 0.11;
+    const minU = 0.08;
     const pw = parts.map(p => Math.max(p.bytes, 1));
     const ps = pw.reduce((a, b) => a + b, 0) || 1;
     const pf = pw.map(x => Math.max(x / ps, minU));
@@ -729,6 +745,12 @@ function stepSimulation(dt, now) {
         const j = hash3(il * 31 + band * 7 + sim.seed, s, tick >> 2);
         actFlat[base + s] = Math.max(actFlat[base + s], env * gain * (0.35 + 0.85 * j));
       }
+    }
+    // MoE simulation: add expert activation for MoE layers
+    if (viz.n_experts > 0 && viz.is_moe_layer[il]) {
+      if (!viz._moeHeat) viz._moeHeat = new Float32Array(L);
+      const moeHeat = 0.3 + 0.5 * hash3(il * 13 + sim.seed, Math.floor(sim.front), tick >> 2);
+      viz._moeHeat[il] = Math.max(viz._moeHeat[il], moeHeat * amp);
     }
   }
   const spec = L * 3 * S;
