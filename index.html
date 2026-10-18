@@ -215,7 +215,7 @@ const viz = {
 };
 
 let brain = null;
-let actFlat = null;              // L*3*S (+3 special slots) activation heat, written by frames / simulation
+let actFlat = null;              // L (+3 special slots) activation heat, written by frames / simulation
 const uniforms = {
   uTime:  { value: 0 },
   uPixel: { value: renderer.getPixelRatio() },
@@ -339,7 +339,7 @@ function layoutMemory() {
     kind:'comp', il:-1, bytes:r.bytes, name:r.name,
     color: COMPONENT_COLORS[r.index % COMPONENT_COLORS.length],
     v0: r.y, v1: r.y + r.h,
-    slices: [{ band: B_SPEC, u0: r.x, u1: r.x + r.w, color: COMPONENT_COLORS[r.index % COMPONENT_COLORS.length] }]
+    slices: [{ band: CT_EMBED, u0: r.x, u1: r.x + r.w, color: COMPONENT_COLORS[r.index % COMPONENT_COLORS.length] }]
   }));
 }
 
@@ -480,43 +480,38 @@ function buildBrain() {
   // ── HUD / legends ──
   const layerZones = zones.filter(z => z.kind === 'layer').length;
   $('zones').textContent = viz.mode === 'layers'
-    ? `${layerZones} layers × 3 bands × ${S}`
+    ? `${layerZones} layer continents`
     : `${zones.length} memory zones`;
   viz.modelBytes = viz.components.reduce((s, c) => s + c.bytes, 0);
 
   const legend = [];
   if (viz.mode === 'layers') {
-    for (let b = 0; b < 3; b++) {
+    // Continent legend — show each continent type that exists on this model
+    const shown = new Set();
+    for (const z of zones) {
+      if (shown.has(z.kind)) continue;
+      shown.add(z.kind);
       const el = document.createElement('span');
       const dot = document.createElement('i');
       dot.className = 'dot';
-      dot.style.background = BAND_COLOR[b];
-      dot.style.boxShadow = `0 0 6px ${BAND_COLOR[b]}`;
-      el.append(dot, `${BAND_NAME[b]} ×${S}`);
+      dot.style.background = z.color;
+      dot.style.boxShadow = `0 0 6px ${z.color}`;
+      const label = z.kind === 'layer' ? `layer (attn|ffn|res)` : z.kind;
+      el.append(dot, label);
       legend.push(el);
     }
-    for (const k of ['embed', 'out', 'vis']) {
-      if (!zones.some(z => z.kind === k)) continue;
+  } else {
+    for (const z of zones) {
       const el = document.createElement('span');
       const dot = document.createElement('i');
       dot.className = 'dot';
-      dot.style.background = SPECIAL_COLOR[k];
-      dot.style.boxShadow = `0 0 6px ${SPECIAL_COLOR[k]}`;
-      el.append(dot, k === 'embed' ? 'embedding' : k === 'out' ? 'lm head' : 'vision');
+      dot.style.background = z.color;
+      dot.style.boxShadow = `0 0 6px ${z.color}`;
+      el.append(dot, `${z.label} — ${formatBytes(z.bytes)}`);
       legend.push(el);
     }
   }
   $('bandLegend').replaceChildren(...legend);
-  // Add MoE expert legend if applicable
-  if (viz.n_experts > 0) {
-    const moeEl = document.createElement('span');
-    const moeDot = document.createElement('i');
-    moeDot.className = 'dot';
-    moeDot.style.background = MOE_COLOR;
-    moeDot.style.boxShadow = `0 0 6px ${MOE_COLOR}`;
-    moeEl.append(moeDot, `MoE experts ×${viz.n_experts}`);
-    $('bandLegend').appendChild(moeEl);
-  }
   $('componentLegend').replaceChildren(...viz.components.map((c, i) => {
     const el = document.createElement('span');
     const dot = document.createElement('i');
@@ -557,42 +552,37 @@ function heatOf(key, arr, S) {
   return out;
 }
 
-function writeHeat(il, band, values) {
-  const S = viz.S;
-  const base = (il * 3 + band) * S;
-  for (let i = 0; i < S; i++) actFlat[base + i] = values[i];
+function writeHeat(il, value) {
+  if (il < 0 || il >= viz.L) return;
+  actFlat[il] = Math.max(actFlat[il], value);
 }
 
 function applyLayerFrame(f) {
   if (!actFlat || !Number.isInteger(f.il) || f.il < 0 || f.il >= viz.L) return;
-  const S = viz.S;
   const entry = lastHeat.get(f.il) || {};
-  if (f.a && f.a.length === S) { const h = heatOf(`${f.il}a`, f.a, S); writeHeat(f.il, B_ATTN, h); entry.a = h; }
-  if (f.f && f.f.length === S) { const h = heatOf(`${f.il}f`, f.f, S); writeHeat(f.il, B_FFN,  h); entry.f = h; }
-  if (f.r && f.r.length === S) { const h = heatOf(`${f.il}r`, f.r, S); writeHeat(f.il, B_RES,  h); entry.r = h; }
+
+  // Merge attn/ffn/res into a single layer heat value (max of the three)
+  let maxHeat = 0;
+  if (f.a && f.a.length > 0) { const h = heatOf(`${f.il}a`, f.a, f.a.length); maxHeat = Math.max(maxHeat, h); entry.a = h; }
+  if (f.f && f.f.length > 0) { const h = heatOf(`${f.il}f`, f.f, f.f.length); maxHeat = Math.max(maxHeat, h); entry.f = h; }
+  if (f.r && f.r.length > 0) { const h = heatOf(`${f.il}r`, f.r, f.r.length); maxHeat = Math.max(maxHeat, h); entry.r = h; }
+  // Also check MoE gate scores
+  if (f.moe && f.moe.length > 0) {
+    const maxG = Math.max(...f.moe, 1e-9);
+    const avgGate = f.moe.reduce((s, v) => s + v, 0) / f.moe.length / maxG;
+    maxHeat = Math.max(maxHeat, avgGate * 0.5);
+    viz.moe_gate = f.moe;
+    if (!viz._moeHeat) viz._moeHeat = new Float32Array(viz.L);
+    viz._moeHeat[f.il] = Math.max(viz._moeHeat[f.il], avgGate);
+  }
+  if (f.routed && f.routed.length > 0) viz.moe_routed = f.routed;
+
+  writeHeat(f.il, maxHeat);
   lastHeat.set(f.il, entry);
 
-  const spec = viz.L * 3 * S;
-  if (f.il === 0) actFlat[spec + SPECIAL_SLOT.embed] = Math.max(actFlat[spec + SPECIAL_SLOT.embed], f.nt > 1 ? 1.0 : 0.65);
-  if (f.il === viz.L - 1) actFlat[spec + SPECIAL_SLOT.out] = 1.0;
-
-  // MoE expert activation — render as a ring within the layer
-  if (f.moe && f.moe.length > 0) {
-    viz.moe_gate = f.moe;
-    // Normalize and write to MoE band for this layer
-    const maxG = Math.max(...f.moe, 1e-9);
-    for (let e = 0; e < f.moe.length; e++) {
-      const heat = f.moe[e] / maxG;
-      // Write to MoE band: layer * 3 + B_MOE = il*3+4
-      // But we only have 3 bands (0,1,2) + B_SPEC(3) = 4 slots. Use B_SPEC as MoE carrier.
-      // Actually, write to a separate MoE activation array.
-      if (!viz._moeHeat) viz._moeHeat = new Float32Array(viz.L);
-      viz._moeHeat[f.il] = Math.max(viz._moeHeat[f.il], heat);
-    }
-  }
-  if (f.routed && f.routed.length > 0) {
-    viz.moe_routed = f.routed;
-  }
+  // Special slots: embed at layer 0, out at last layer
+  if (f.il === 0) actFlat[viz.L + SPECIAL_SLOT.embed] = Math.max(actFlat[viz.L + SPECIAL_SLOT.embed], f.nt > 1 ? 1.0 : 0.65);
+  if (f.il === viz.L - 1) actFlat[viz.L + SPECIAL_SLOT.out] = Math.max(actFlat[viz.L + SPECIAL_SLOT.out], 1.0);
 
   viz.il = f.il;
   viz.step = f.s ?? viz.step;
@@ -608,7 +598,7 @@ function applyVisionFrame(f) {
   const h = heatOf('vis', f.r, S);
   let peak = 0;
   for (let i = 0; i < h.length; i++) peak = Math.max(peak, h[i]);
-  actFlat[viz.L * 3 * S + SPECIAL_SLOT.vis] = Math.max(actFlat[viz.L * 3 * S + SPECIAL_SLOT.vis], peak);
+  actFlat[viz.L + SPECIAL_SLOT.vis] = Math.max(actFlat[viz.L + SPECIAL_SLOT.vis], peak);
 }
 
 /* ───────────────────────── simulation (no server) ───────────────────────── */
@@ -621,7 +611,7 @@ function hash3(a, b, c) {
 }
 function stepSimulation(dt, now) {
   if (!actFlat) return;
-  const L = viz.L, S = viz.S;
+  const L = viz.L;
   const period = sim.think ? 1.05 : 0.75;
   sim.front += dt * ((L + 5) / period);
   if (sim.front > L + 4) { sim.front = -3; sim.seed = (sim.seed * 1103515245 + 12345) >>> 0; }
@@ -630,14 +620,9 @@ function stepSimulation(dt, now) {
   for (let il = 0; il < L; il++) {
     const d = il - sim.front;
     const env = Math.exp(-(d * d) / (2 * 1.6 * 1.6)) * amp;
-    for (let band = 0; band < 3; band++) {
-      const base = (il * 3 + band) * S;
-      const gain = band === 0 ? 1.0 : band === 1 ? 0.85 : 0.6;
-      for (let s = 0; s < S; s++) {
-        const j = hash3(il * 31 + band * 7 + sim.seed, s, tick >> 2);
-        actFlat[base + s] = Math.max(actFlat[base + s], env * gain * (0.35 + 0.85 * j));
-      }
-    }
+    // Single heat value per layer (attn + ffn + residual merged)
+    const gain = 0.6 + 0.4 * hash3(il * 31 + sim.seed, tick >> 2);
+    actFlat[il] = Math.max(actFlat[il], env * gain);
     // MoE simulation: add expert activation for MoE layers
     if (viz.n_experts > 0 && viz.is_moe_layer[il]) {
       if (!viz._moeHeat) viz._moeHeat = new Float32Array(L);
@@ -645,11 +630,11 @@ function stepSimulation(dt, now) {
       viz._moeHeat[il] = Math.max(viz._moeHeat[il], moeHeat * amp);
     }
   }
-  const spec = L * 3 * S;
-  actFlat[spec + SPECIAL_SLOT.embed] = Math.max(actFlat[spec + SPECIAL_SLOT.embed], amp * 0.8);
+  // Special slots
+  actFlat[L + SPECIAL_SLOT.embed] = Math.max(actFlat[L + SPECIAL_SLOT.embed], amp * 0.8);
   const lastFront = sim.front >= L - 1 ? 1.0 : 0.0;
-  actFlat[spec + SPECIAL_SLOT.out] = Math.max(actFlat[spec + SPECIAL_SLOT.out], lastFront * amp);
-  if (viz.vision) actFlat[spec + SPECIAL_SLOT.vis] = Math.max(actFlat[spec + SPECIAL_SLOT.vis], 0.25 + 0.25 * Math.sin(now * 0.7));
+  actFlat[L + SPECIAL_SLOT.out] = Math.max(actFlat[L + SPECIAL_SLOT.out], lastFront * amp);
+  if (viz.vision) actFlat[L + SPECIAL_SLOT.vis] = Math.max(actFlat[L + SPECIAL_SLOT.vis], 0.25 + 0.25 * Math.sin(now * 0.7));
   viz.il = Math.max(0, Math.min(L - 1, Math.round(sim.front)));
   viz.step = Math.floor(now / period);
   viz.nt = 1;
