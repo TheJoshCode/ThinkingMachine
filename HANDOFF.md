@@ -7,7 +7,6 @@ Building a visualizer particle sphere that shows the inner workings of a VLM/LLM
 - **Project root:** `C:/Users/joshr/Downloads/ThinkingMachine/`
 - **Custom llama.cpp:** `C:/Users/joshr/Downloads/ThinkingMachine/llama.cpp/`
 - **Testing binary:** `C:/Users/joshr/Downloads/ThinkingMachine/llama.cpp/build/bin/Release/llama-server.exe`
-- **Model files:** `F:/aimodels/unsloth/Qwen3.6-35B-A3B-MTP-GGUF/` (Qwen3.6-35B-A3B-MXFP4_MOE + mmproj-F32.gguf)
 - **Visualizer:** `C:/Users/joshr/Downloads/ThinkingMachine/index.html`
 - **Backend:** `C:/Users/joshr/Downloads/ThinkingMachine/llama.cpp/tools/server/server-neural.h` (and `.cpp`)
 
@@ -75,21 +74,6 @@ Building a visualizer particle sphere that shows the inner workings of a VLM/LLM
 - But there's no visual representation of MoE experts on the globe yet
 - MoE layers are identified by `viz.is_moe_layer[]` array from meta
 - The MoE heat data exists but isn't being rendered as a visual element
-
-## Server Launch
-- Binary: `llama-server.exe` in `C:/Users/joshr/Downloads/ThinkingMachine/llama.cpp/build/bin/Release/`
-- Custom build exposes `/neural` endpoint
-- Tested on port 8081 (port 8080 is the user's production brain — DO NOT KILL)
-- Launch script: `C:/Users/joshr/Downloads/ThinkingMachine/runstuff.bat`
-
-## Model Info
-- Model: Qwen3.6-35B-A3B-MXFP4_MOE (MoE architecture)
-- Vision adapter: mmproj-F32.gguf
-- From meta response on port 8081:
-  - L=32 layers, S=16, heads=16, hkv=4, nff=9216, vocab=248320
-  - Embedding: ~1.35 GiB, Attention: ~1.1 GiB, Feed-forward: ~2.4 GiB
-  - Some layers have `a:39006208` (MoE layers — smaller attn), others `a:44880640`
-  - recr=[1,1,1,0,...] — SSM layers at indices 3,7,11,15,19,23,27,31
 
 ## Key Functions to Know
 - `layoutLayers()` — creates continent zones from model bytes
