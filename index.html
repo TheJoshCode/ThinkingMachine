@@ -343,7 +343,7 @@ function layoutMemory() {
   }));
 }
 
-/* ───────────────────────── build the brain ───────────────────────── */
+/* ───────────────────────── build the brain — continents on a globe ───────────────────────── */
 function disposeBrain() {
   if (!brain) return;
   scene.remove(brain.group);
@@ -352,7 +352,6 @@ function disposeBrain() {
   viz._moeHeat = null;
   viz.moe_gate = [];
   viz.moe_routed = [];
-  viz.tokenRing = null;
 }
 
 function buildBrain() {
@@ -366,8 +365,10 @@ function buildBrain() {
   });
   viz.zones = zones;
 
-  const specOffset = L * 3 * S;
-  actFlat = new Float32Array(specOffset + 3);
+  // Activation array: one continent per layer (attn + ffn + residual merged into one heat map)
+  // Plus special slots for embed / out / vis
+  const specOffset = L + 3;
+  actFlat = new Float32Array(specOffset);
 
   const vEdges = zones.map(z => z.v1);
   function zoneAtV(v) {
@@ -385,24 +386,25 @@ function buildBrain() {
   const aSize  = new Float32Array(nodeCount);
   const aZone  = new Float32Array(nodeCount);
   const aCell  = new Uint32Array(nodeCount);
-  const cellId = new Uint16Array(nodeCount);   // coarse id  -> band borders
-  const zoneId = new Int16Array(nodeCount);    // layer id   -> layer borders
+  const zoneId = new Int16Array(nodeCount);    // continent id -> continent borders
 
   const nodeAt = (lat, lon) => 1 + (lat - 1) * gridLon + (lon % gridLon);
   const warpedU = (u, v) => ((u + 0.010 * Math.sin(2*Math.PI*(2.4*v + 0.13))) % 1 + 1) % 1;
   const warpedV = (v, u) => Math.max(0, Math.min(0.999999, v + 0.010 * Math.sin(2*Math.PI*(2.1*u + 0.37))));
 
+  // Map a (u, v) position on the sphere to a cell index and color
   function cellFor(u, v) {
     const z = zoneAtV(v);
     if (z.kind !== 'layer') {
-      const slot = z.kind === 'comp' ? 0 : (SPECIAL_SLOT[z.kind] ?? 0);
-      return { cell: specOffset + slot, coarse: 60000 + zones.indexOf(z), zone: -1, colorObj: z.colorObj };
+      // Special zone (embed / out / vis) — use special slot
+      const slot = z.kind === 'comp' ? 0 : (z.kind === 'vis' ? 2 : 1);
+      return { cell: specOffset + slot, zone: zones.indexOf(z), colorObj: z.colorObj };
     }
+    // Layer continent: find which sub-region (attn / ffn / residual) this u maps to
     let sub = z.slices[z.slices.length - 1];
     for (const s of z.slices) { if (u < s.u1) { sub = s; break; } }
-    const t = Math.min(0.999999, Math.max(0, (u - sub.u0) / Math.max(1e-6, sub.u1 - sub.u0)));
-    const slice = Math.min(S - 1, Math.floor(t * S));
-    return { cell: (z.il * 3 + sub.band) * S + slice, coarse: z.il * 3 + sub.band, zone: z.il, colorObj: sub.colorObj || z.colorObj };
+    // Cell index: layer index (for activation) + sub-band info in zone
+    return { cell: z.il, zone: zones.indexOf(z), colorObj: sub.colorObj || z.colorObj, band: sub.band };
   }
 
   function setN(index, a, lon, v) {
@@ -412,7 +414,6 @@ function buildBrain() {
     const u = warpedU(lon / gridLon, v), wv = warpedV(v, lon / gridLon);
     const c = cellFor(u, wv);
     aCell[index]  = c.cell;
-    cellId[index] = c.coarse;
     zoneId[index] = c.zone;
     aZone[index]  = c.zone;
     aColor.set(c.colorObj.toArray(), index * 3);
@@ -428,12 +429,11 @@ function buildBrain() {
     for (let lon = 0; lon < gridLon; lon++) setN(nodeAt(lat, lon), a, lon, v);
   }
 
-  // borders: mid-point crossings, exactly like the original shell outline
-  function borderGeometry(ids, sameZoneOnly) {
+  // Borders: only continent outlines (subtle coastlines, not grid lines)
+  function borderGeometry(ids) {
     const segs = [];
     const crossing = (from, to) => {
       if (ids[from] === ids[to]) return null;
-      if (sameZoneOnly && zoneId[from] !== zoneId[to]) return null;
       return [
         (pos[from*3]   + pos[to*3])   * 0.5,
         (pos[from*3+1] + pos[to*3+1]) * 0.5,
@@ -454,12 +454,9 @@ function buildBrain() {
     return g;
   }
 
-  group.add(new THREE.LineSegments(borderGeometry(cellId, true), new THREE.LineBasicMaterial({
-    color: 0x9bfaff, transparent: true, opacity: 0.40,
-    blending: THREE.AdditiveBlending, depthWrite: false
-  })));
-  group.add(new THREE.LineSegments(borderGeometry(zoneId, false), new THREE.LineBasicMaterial({
-    color: 0xcdefff, transparent: true, opacity: 0.8,
+  // Only draw continent borders (zoneId), not intra-band borders
+  group.add(new THREE.LineSegments(borderGeometry(zoneId), new THREE.LineBasicMaterial({
+    color: 0x9bfaff, transparent: true, opacity: 0.25,
     blending: THREE.AdditiveBlending, depthWrite: false
   })));
 
@@ -479,111 +476,6 @@ function buildBrain() {
 
   scene.add(group);
   brain = { group, aAct, aCell, points };
-
-  // ── MoE expert ring ──
-  if (viz.n_experts > 0 && viz.is_moe_layer.some(Boolean)) {
-    const nMoE = viz.is_moe_layer.filter(Boolean).length;
-    if (nMoE > 0) {
-      const expertCount = Math.min(viz.n_experts, 64);  // cap for rendering
-      const expertPos = new Float32Array(nMoE * expertCount * 3);
-      const expertAct = new Float32Array(nMoE * expertCount);
-      const expertRand = new Float32Array(nMoE * expertCount);
-      const expertColor = new Float32Array(nMoE * expertCount * 3);
-      const expertZone = new Float32Array(nMoE * expertCount);
-      const expertSize = new Float32Array(nMoE * expertCount);
-
-      const moeLayerIndices = [];
-      for (let i = 0; i < viz.L; i++) {
-        if (viz.is_moe_layer[i]) moeLayerIndices.push(i);
-      }
-
-      for (let li = 0; li < nMoE; li++) {
-        const layer = moeLayerIndices[li];
-        const v = (layer + 0.5) / viz.L;  // vertical position matches layer
-        const a = Math.acos(1 - 2 * v);
-        const rr = R * Math.sin(a) * 0.85;  // inner ring
-        const baseY = -R * Math.cos(a);
-        for (let e = 0; e < expertCount; e++) {
-          const th = (e / expertCount) * Math.PI * 2;
-          const idx = (li * expertCount + e);
-          expertPos[idx * 3]     = rr * Math.cos(th);
-          expertPos[idx * 3 + 1] = baseY;
-          expertPos[idx * 3 + 2] = rr * Math.sin(th);
-          expertRand[idx] = Math.random();
-          expertZone[idx] = layer;
-          expertSize[idx] = 1.8 + Math.random() * 0.8;
-          // Color by expert index (gradient from orange to red)
-          const t = e / expertCount;
-          const r = 0.8 + 0.2 * t;
-          const g = 0.4 * (1 - t);
-          const b = 0.1;
-          expertColor[idx * 3]     = r;
-          expertColor[idx * 3 + 1] = g;
-          expertColor[idx * 3 + 2] = b;
-        }
-      }
-
-      const expertGeo = new THREE.BufferGeometry();
-      expertGeo.setAttribute('position', new THREE.Float32BufferAttribute(expertPos, 3));
-      expertGeo.setAttribute('aAct', new THREE.Float32BufferAttribute(expertAct, 1));
-      expertGeo.setAttribute('aColor', new THREE.Float32BufferAttribute(expertColor, 3));
-      expertGeo.setAttribute('aRand', new THREE.Float32BufferAttribute(expertRand, 1));
-      expertGeo.setAttribute('aSize', new THREE.Float32BufferAttribute(expertSize, 1));
-      expertGeo.setAttribute('aZone', new THREE.Float32BufferAttribute(expertZone, 1));
-      const expertPoints = new THREE.Points(expertGeo, new THREE.ShaderMaterial({
-        uniforms, vertexShader: vert, fragmentShader: frag,
-        transparent: true, depthWrite: false, blending: THREE.AdditiveBlending
-      }));
-      expertPoints.frustumCulled = false;
-      group.add(expertPoints);
-      brain.expertRing = { points: expertPoints, geo: expertGeo, act: expertAct, nLayers: nMoE, nExperts: expertCount, layerIndices: moeLayerIndices };
-    }
-  }
-
-  // ── Token spotlight ring (pulsing ring at token position) ──
-  if (viz.vocab > 0 && viz.nt > 1) {
-    const ringPoints = 128;
-    const ringPos = new Float32Array(ringPoints * 3);
-    const ringAct = new Float32Array(ringPoints);
-    const ringColor = new Float32Array(ringPoints * 3);
-    const ringRand = new Float32Array(ringPoints);
-    const ringSize = new Float32Array(ringPoints);
-    const ringZone = new Float32Array(ringPoints);
-
-    // Place ring at the current active layer height, around the equator
-    const ringV = (viz.il + 0.5) / viz.L;
-    const ringA = Math.acos(1 - 2 * ringV);
-    const ringR = R * Math.sin(ringA) * 1.02;  // slightly outside the sphere
-    const ringY = -R * Math.cos(ringA);
-
-    for (let i = 0; i < ringPoints; i++) {
-      const th = (i / ringPoints) * Math.PI * 2;
-      ringPos[i * 3]     = ringR * Math.cos(th);
-      ringPos[i * 3 + 1] = ringY;
-      ringPos[i * 3 + 2] = ringR * Math.sin(th);
-      ringRand[i] = Math.random();
-      ringZone[i] = -1;
-      ringSize[i] = 2.0;
-      ringColor[i * 3]     = 0.9;
-      ringColor[i * 3 + 1] = 0.85;
-      ringColor[i * 3 + 2] = 0.2;
-    }
-
-    const ringGeo = new THREE.BufferGeometry();
-    ringGeo.setAttribute('position', new THREE.Float32BufferAttribute(ringPos, 3));
-    ringGeo.setAttribute('aAct', new THREE.Float32BufferAttribute(ringAct, 1));
-    ringGeo.setAttribute('aColor', new THREE.Float32BufferAttribute(ringColor, 3));
-    ringGeo.setAttribute('aRand', new THREE.Float32BufferAttribute(ringRand, 1));
-    ringGeo.setAttribute('aSize', new THREE.Float32BufferAttribute(ringSize, 1));
-    ringGeo.setAttribute('aZone', new THREE.Float32BufferAttribute(ringZone, 1));
-    const ringPoints3 = new THREE.Points(ringGeo, new THREE.ShaderMaterial({
-      uniforms, vertexShader: vert, fragmentShader: frag,
-      transparent: true, depthWrite: false, blending: THREE.AdditiveBlending
-    }));
-    ringPoints3.frustumCulled = false;
-    group.add(ringPoints3);
-    brain.tokenRing = { points: ringPoints3, geo: ringGeo, act: ringAct };
-  }
 
   // ── HUD / legends ──
   const layerZones = zones.filter(z => z.kind === 'layer').length;
