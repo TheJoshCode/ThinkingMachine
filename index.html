@@ -1,0 +1,1093 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Neural Sphere – llama.cpp</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+  :root { --cyan:#2ff3ff; --orange:#ff7a1a; --violet:#b48cff; --bg:#000000; --panel:rgba(5,8,14,.82); }
+  * { box-sizing: border-box; }
+  html,body { margin:0; height:100%; background:var(--bg); overflow:hidden;
+    font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace; color:#bfefff; }
+  canvas#c { position:fixed; inset:0; display:block; }
+  .panel { position:fixed; background:var(--panel); border:1px solid rgba(47,243,255,.35);
+    box-shadow:0 0 20px rgba(47,243,255,.12), inset 0 0 15px rgba(47,243,255,.04);
+    backdrop-filter: blur(8px); border-radius:4px; padding:10px 14px; font-size:11px;
+    letter-spacing:.05em; }
+  #hud { top:20px; left:20px; width:308px; max-height:calc(100vh - 40px); overflow:auto; }
+  #hud h1 { margin:0 0 8px; font-size:12px; letter-spacing:.3em; color:var(--cyan);
+    text-shadow:0 0 10px var(--cyan); font-weight:600; }
+  .row { display:flex; justify-content:space-between; align-items:center; margin:4px 0; gap:8px; }
+  .row label { opacity:.6; }
+  .row b { color:#fff; font-weight:500; }
+  .sep { height:1px; background:linear-gradient(90deg,rgba(47,243,255,.45),rgba(47,243,255,0)); margin:8px 0; }
+  input[type=text], textarea {
+    background:rgba(0,0,0,.6); color:#dff; border:1px solid rgba(47,243,255,.35);
+    border-radius:3px; padding:4px 6px; font:inherit; outline:none; }
+  input:focus, textarea:focus { border-color:var(--cyan); box-shadow:0 0 8px rgba(47,243,255,.4); }
+  #endpoint { width:150px; }
+  .legend { display:flex; gap:8px; margin-top:8px; font-size:10px; flex-wrap:wrap; }
+  #componentLegend { opacity:.75; }
+  .legend span { white-space:nowrap; }
+  .dot { display:inline-block; width:7px; height:7px; border-radius:50%; margin-right:3px; vertical-align:middle; }
+  #status { color:var(--orange); }
+  #out { top:20px; right:20px; width:min(380px, 34vw); max-height:55vh; overflow:auto;
+    white-space:pre-wrap; line-height:1.5; font-size:11px; display:none; }
+  #out .think { color:var(--violet); opacity:.85; }
+  #bar { left:50%; bottom:20px; transform:translateX(-50%); width:min(760px, 92vw);
+    display:flex; gap:8px; align-items:flex-end; padding:10px; }
+  #prompt { flex:1; resize:none; height:40px; }
+  button { background:rgba(47,243,255,.08); color:var(--cyan); border:1px solid var(--cyan);
+    border-radius:3px; padding:8px 12px; font:inherit; cursor:pointer; letter-spacing:.1em;
+    text-transform:uppercase; font-size:10px; }
+  button:hover { background:rgba(47,243,255,.22); box-shadow:0 0 10px rgba(47,243,255,.5); }
+  button.stop { color:var(--orange); border-color:var(--orange); display:none; }
+  button.mini { padding:4px 7px; font-size:9px; }
+  button.mini.on { background:rgba(47,243,255,.3); color:#fff; }
+  #imgname { font-size:10px; opacity:.6; max-width:80px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  #attach { padding:8px 10px; }
+  #boot { position:fixed; inset:0; display:none; place-items:center; background:rgba(0,0,0,.92);
+    z-index:50; text-align:center; padding:40px; font-size:12px; line-height:1.9; }
+  #boot.on { display:grid; }
+  .panel::before, .panel::after {
+    content:''; position:absolute; width:6px; height:6px; border-color:var(--cyan); border-style:solid;
+  }
+  .panel::before { top:-1px; left:-1px; border-width:2px 0 0 2px; }
+  .panel::after { bottom:-1px; right:-1px; border-width:0 2px 2px 0; }
+</style>
+<script>
+  // readable failure instead of a black screen if the CDN modules don't load
+  window.__vizError = function (msg) {
+    var el = document.getElementById('boot');
+    el.classList.add('on');
+    el.innerHTML = '<div><b style="color:#2ff3ff">visualizer failed to start</b><br><br>' + msg +
+      '<br><br>three.js is pulled from jsdelivr \u2014 check the connection.</div>';
+  };
+  window.addEventListener('error', function (e) {
+    window.__vizError((e && (e.message || (e.target && e.target.src))) || 'unknown error');
+  }, true);
+  setTimeout(function () {
+    if (!window.__vizBooted) window.__vizError('the page is still loading…');
+  }, 10000);
+</script>
+<script type="importmap">
+{ "imports": {
+  "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+  "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+} }
+</script>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div id="boot"></div>
+
+<div id="hud" class="panel">
+  <h1>NEURAL SPHERE</h1>
+  <div class="row"><label>endpoint</label><input id="endpoint" type="text" value="http://localhost:8081"></div>
+  <div class="row"><label>model</label><b id="model">—</b></div>
+  <div class="row"><label>loaded layers</label><b id="layers">—</b></div>
+  <div class="row"><label>zones</label><b id="zones">—</b></div>
+  <div class="row"><label>source</label><b id="source" style="color:#ff7a1a">SIM</b></div>
+  <div class="row"><label>status</label><b id="status">idle</b></div>
+  <div class="row"><label>pass</label><b id="pass">—</b></div>
+  <div class="row"><label>tokens</label><b id="ntok">0</b></div>
+  <div class="row"><label>tok/s</label><b id="tps">0.0</b></div>
+  <div class="sep"></div>
+  <div class="row"><label>layer front</label><b id="front">—</b></div>
+  <div class="row"><label>layer type</label><b id="ltype">—</b></div>
+  <div class="row"><label>layer time</label><b id="lms">—</b></div>
+  <div class="row"><label>hot head</label><b id="hhead">—</b></div>
+  <div class="row"><label>hot neurons</label><b id="hnrn">—</b></div>
+  <div class="row"><label>MoE experts</label><b id="moeInfo">—</b></div>
+  <div class="row"><label>active experts</label><b id="moeActive">—</b></div>
+  <div class="row"><label>weights here</label><b id="parts">waiting for model</b></div>
+  <div class="sep"></div>
+  <div id="bandLegend" class="legend"></div>
+  <div id="componentLegend" class="legend"></div>
+  <div class="row" style="margin-top:8px"><label>layout</label>
+    <span><button id="layBtn" class="mini on">layers</button> <button id="memBtn" class="mini">memory</button></span>
+  </div>
+</div>
+
+<div id="out" class="panel"></div>
+
+<div id="bar" class="panel">
+  <button id="attach" title="attach image (VLM)">img</button>
+  <span id="imgname"></span>
+  <input id="file" type="file" accept="image/*" hidden>
+  <textarea id="prompt" placeholder="Ask the brain something… (Enter to send, Shift+Enter for newline)"></textarea>
+  <button id="send">Fire</button>
+  <button id="stop" class="stop">Stop</button>
+</div>
+
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
+import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
+import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
+window.__vizBooted = true;
+
+/* ───────────────────────── config ───────────────────────── */
+const R = 11;
+const GRID_LAT = 144;
+const GRID_LON = 288;
+const POLL_MS = 3000;            // linear retry interval against the user's URL
+const $ = id => document.getElementById(id);
+const store = {
+  get(k, d){ try { return localStorage.getItem(k) ?? d; } catch { return d; } },
+  set(k, v){ try { localStorage.setItem(k, v); } catch {} }
+};
+
+// band codes: 0 attention heads, 1 MLP neurons, 2 residual stream, 3 no signal (embed / lm head / vision)
+// +4 = MoE expert activation (visualized as a ring within MoE layers)
+const B_ATTN = 0, B_FFN = 1, B_RES = 2, B_SPEC = 3, B_MOE = 4;
+const BAND_COLOR = ['#2ff3ff', '#5ee08a', '#4a7fd8'];
+const BAND_NAME  = ['heads', 'neurons', 'residual'];
+const MOE_COLOR  = '#ff9d42';
+const SPECIAL_COLOR = { embed:'#ff9d42', out:'#e875d6', vis:'#a88bff' };
+const SPECIAL_SLOT  = { embed:0, out:1, vis:2 };
+const COMPONENT_COLORS = [
+  '#39d8ff', '#70e38a', '#ffd84d', '#ff9d42', '#ff5a88',
+  '#a88bff', '#43c7b0', '#65a9ff', '#e875d6', '#b2e36b'
+];
+
+/* ───────────────────────── scene ───────────────────────── */
+const canvas = $('c');
+const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, powerPreference: 'high-performance' });
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+renderer.setSize(innerWidth, innerHeight);
+renderer.setClearColor(0x000000);
+
+const scene = new THREE.Scene();
+scene.fog = new THREE.FogExp2(0x000000, 0.010);
+const camera = new THREE.PerspectiveCamera(48, innerWidth / innerHeight, 0.1, 400);
+camera.position.set(0, 4, 30);
+
+const controls = new OrbitControls(camera, canvas);
+controls.enableDamping = true;
+controls.dampingFactor = 0.06;
+controls.autoRotate = true;
+controls.autoRotateSpeed = 0.5;
+controls.minDistance = 14;
+controls.maxDistance = 70;
+
+const composer = new EffectComposer(renderer);
+composer.addPass(new RenderPass(scene, camera));
+const bloom = new UnrealBloomPass(new THREE.Vector2(innerWidth, innerHeight), 1.35, 0.6, 0.0);
+composer.addPass(bloom);
+
+/* ───────────────────────── model state ───────────────────────── */
+const viz = {
+  mode: 'layers',                 // 'layers' | 'memory'
+  L: 32, S: 16,
+  heads: 16, hkv: 4, E: 0, nff: 0, vocab: 0,
+  recr: [],
+  layerBytes: [],
+  components: [],
+  vision: false, fine: true, desc: '',
+  bytesHere: 0, modelBytes: 0,
+  step: -1, il: -1, nt: 1, layerUs: 0,
+  fps: 0, frames: 0, live: false, liveAt: 0, gotMeta: false, think: false,
+  // MoE tracking
+  n_experts: 0, top_k_experts: 0, is_moe_layer: [],
+  moe_gate: [], moe_routed: [],
+  // KV cache
+  kv_size: 0, kv_used: 0,
+  // Token tracking
+  token_count: 0, token_spotlight: -1,
+  // Confidence
+  prediction_confidence: 0,
+};
+
+let brain = null;
+let actFlat = null;              // L*3*S (+3 special slots) activation heat, written by frames / simulation
+const uniforms = {
+  uTime:  { value: 0 },
+  uPixel: { value: renderer.getPixelRatio() },
+  uFront: { value: -99 },
+  uFrontAmp: { value: 0 },
+  uWaveCol: { value: new THREE.Color('#2ff3ff') }
+};
+
+const vert = /* glsl */`
+  attribute float aAct; attribute vec3 aColor; attribute float aRand; attribute float aSize; attribute float aZone;
+  uniform float uTime; uniform float uPixel; uniform float uFront; uniform float uFrontAmp;
+  varying float vAct; varying vec3 vColor; varying float vFace; varying float vFront;
+  void main(){
+    vec4 mv = modelViewMatrix * vec4(position,1.0);
+    vec3 n = normalize(normalMatrix * normalize(position));
+    vFace = dot(n, normalize(-mv.xyz));
+    float flick = 0.75 + 0.25 * sin(uTime*12.0 + aRand*50.0);
+    float front = aZone >= 0.0 ? uFrontAmp * exp(-pow(aZone - uFront, 2.0) * 1.1) : 0.0;
+    vFront = front;
+    vAct = aAct * flick + front * 0.55;
+    vColor = aColor;
+    float s = aSize * (1.0 + vAct*3.2 + front*2.4) * (0.75 + 0.25*smoothstep(-0.8,0.8,vFace));
+    gl_PointSize = s * uPixel * (32.0 / -mv.z);
+    gl_Position = projectionMatrix * mv;
+  }`;
+
+const frag = /* glsl */`
+  uniform vec3 uWaveCol;
+  varying float vAct; varying vec3 vColor; varying float vFace; varying float vFront;
+  void main(){
+    vec2 c = gl_PointCoord - 0.5;
+    float d = length(c);
+    if(d > 0.5) discard;
+    float core = pow(smoothstep(0.5, 0.0, d), 1.6);
+    vec3 base = vColor;
+    vec3 hot = mix(base, vec3(1.0), 0.65);
+    float back = 0.3 + 0.7 * smoothstep(-0.55, 0.45, vFace);
+    vec3 col = mix(base * 0.7, hot, clamp(vAct,0.0,1.0)) * (0.9 + vAct*3.2);
+    col = mix(col, uWaveCol * 2.2, clamp(vFront, 0.0, 1.0) * 0.30);
+    gl_FragColor = vec4(col, (0.75 + vAct*1.25) * core * back);
+  }`;
+
+function formatBytes(bytes) {
+  if (bytes >= 1024 ** 3) return `${(bytes / 1024 ** 3).toFixed(1)} GiB`;
+  if (bytes >= 1024 ** 2) return `${(bytes / 1024 ** 2).toFixed(0)} MiB`;
+  return `${(bytes / 1024).toFixed(0)} KiB`;
+}
+
+/* ───────────────────────── zone layout ─────────────────────────
+   The sphere is a map of the network:
+     vertical   : weight volume, bottom = input side, top = output side
+     inside a layer : attention | feed-forward | residual, by real weight bytes
+     inside a band  : S slices = real heads / neuron groups / channel groups
+   Everything is generated from the model's own numbers (layer count, per-layer
+   tensor bytes, head count), so it re-shapes itself for any model.            */
+function layoutLayers() {
+  const L = viz.L, S = viz.S;
+  const comp = n => {
+    const hit = viz.components.find(c => c.name.toLowerCase().includes(n));
+    return hit ? hit.bytes : 0;
+  };
+  const embedB = comp('embed'), outB = comp('output'), visB = comp('vision');
+  const zones = [];
+
+  if (viz.vision && visB > 0) zones.push({ kind:'vis',   il:-1, bytes:visB,   color:SPECIAL_COLOR.vis   });
+  if (embedB > 0)             zones.push({ kind:'embed', il:-1, bytes:embedB, color:SPECIAL_COLOR.embed });
+  for (let i = 0; i < L; i++) {
+    const p = viz.layerBytes[i] || { a: 1, f: 1, o: 1 };
+    zones.push({ kind:'layer', il:i, bytes:Math.max(1, p.a + p.f + p.o), parts:p, color:'#8fd8ff' });
+  }
+  if (outB > 0) zones.push({ kind:'out', il:-1, bytes:outB, color:SPECIAL_COLOR.out });
+
+  // vertical span ∝ bytes (with a floor so thin zones stay visible)
+  const minV = 0.004;
+  const w = zones.map(z => Math.max(z.bytes, 1));
+  const tot = w.reduce((a, b) => a + b, 0) || 1;
+  const fr = w.map(x => Math.max(x / tot, minV));
+  const fs = fr.reduce((a, b) => a + b, 0);
+  let acc = 0;
+  zones.forEach((z, i) => { z.v0 = acc; acc += fr[i] / fs; z.v1 = acc; });
+  zones[zones.length - 1].v1 = 1;
+
+  // horizontal split inside a layer
+  for (const z of zones) {
+    if (z.kind !== 'layer') { z.slices = [{ band: B_SPEC, u0: 0, u1: 1 }]; continue; }
+    const parts = [
+      { band: B_ATTN, bytes: z.parts.a, color: BAND_COLOR[B_ATTN] },
+      { band: B_FFN,  bytes: z.parts.f, color: BAND_COLOR[B_FFN]  },
+      { band: B_RES,  bytes: Math.max(z.parts.o, (z.parts.a + z.parts.f) * 0.22), color: BAND_COLOR[B_RES] }
+    ];
+    const minU = 0.11;
+    const pw = parts.map(p => Math.max(p.bytes, 1));
+    const ps = pw.reduce((a, b) => a + b, 0) || 1;
+    const pf = pw.map(x => Math.max(x / ps, minU));
+    const pfs = pf.reduce((a, b) => a + b, 0);
+    let a = 0;
+    z.slices = parts.map((p, i) => { const u0 = a; a += pf[i] / pfs; return { band:p.band, u0, u1:a, color:p.color }; });
+    z.slices[z.slices.length - 1].u1 = 1;
+  }
+  return zones;
+}
+
+function layoutMemory() {
+  const comps = viz.components.filter(c => c.bytes > 0).map((c, i) => ({ ...c, index: i }));
+  if (!comps.length) comps.push({ name: 'model', bytes: 1, index: 0 });
+  const regions = [];
+  (function split(items, x, y, w, h) {
+    if (items.length === 1) { regions.push({ ...items[0], x, y, w, h }); return; }
+    const tot = items.reduce((s, i) => s + i.bytes, 0) || 1;
+    let half = tot / 2, at = 1, a = items[0].bytes;
+    while (at < items.length - 1 && a < half) a += items[at++].bytes;
+    const first = items.slice(0, at), second = items.slice(at);
+    const ratio = first.reduce((s, i) => s + i.bytes, 0) / tot;
+    if (w >= h) { split(first, x, y, w * ratio, h); split(second, x + w * ratio, y, w * (1 - ratio), h); }
+    else        { split(first, x, y, w, h * ratio); split(second, x, y + h * ratio, w, h * (1 - ratio)); }
+  })([...comps].sort((a, b) => b.bytes - a.bytes), 0, 0, 1, 1);
+
+  return regions.map(r => ({
+    kind:'comp', il:-1, bytes:r.bytes, name:r.name,
+    color: COMPONENT_COLORS[r.index % COMPONENT_COLORS.length],
+    v0: r.y, v1: r.y + r.h,
+    slices: [{ band: B_SPEC, u0: r.x, u1: r.x + r.w, color: COMPONENT_COLORS[r.index % COMPONENT_COLORS.length] }]
+  }));
+}
+
+/* ───────────────────────── build the brain ───────────────────────── */
+function disposeBrain() {
+  if (!brain) return;
+  scene.remove(brain.group);
+  brain.group.traverse(o => { o.geometry?.dispose(); o.material?.dispose?.(); });
+  brain = null;
+  viz._moeHeat = null;
+  viz.moe_gate = [];
+  viz.moe_routed = [];
+  viz.tokenRing = null;
+}
+
+function buildBrain() {
+  disposeBrain();
+  const group = new THREE.Group();
+  const L = viz.L, S = viz.S;
+  const zones = viz.mode === 'layers' ? layoutLayers() : layoutMemory();
+  zones.forEach(z => {
+    z.colorObj = new THREE.Color(z.color);
+    z.slices.forEach(s => { s.colorObj = new THREE.Color(s.color || z.color); });
+  });
+  viz.zones = zones;
+
+  const specOffset = L * 3 * S;
+  actFlat = new Float32Array(specOffset + 3);
+
+  const vEdges = zones.map(z => z.v1);
+  function zoneAtV(v) {
+    let lo = 0, hi = vEdges.length - 1;
+    while (lo < hi) { const mid = (lo + hi) >> 1; if (v < vEdges[mid]) hi = mid; else lo = mid + 1; }
+    return zones[lo];
+  }
+
+  const gridLat = GRID_LAT, gridLon = GRID_LON;
+  const nodeCount = 2 + (gridLat - 1) * gridLon;
+  const pos    = new Float32Array(nodeCount * 3);
+  const aAct   = new Float32Array(nodeCount);
+  const aColor = new Float32Array(nodeCount * 3);
+  const aRand  = new Float32Array(nodeCount);
+  const aSize  = new Float32Array(nodeCount);
+  const aZone  = new Float32Array(nodeCount);
+  const aCell  = new Uint32Array(nodeCount);
+  const cellId = new Uint16Array(nodeCount);   // coarse id  -> band borders
+  const zoneId = new Int16Array(nodeCount);    // layer id   -> layer borders
+
+  const nodeAt = (lat, lon) => 1 + (lat - 1) * gridLon + (lon % gridLon);
+  const warpedU = (u, v) => ((u + 0.010 * Math.sin(2*Math.PI*(2.4*v + 0.13))) % 1 + 1) % 1;
+  const warpedV = (v, u) => Math.max(0, Math.min(0.999999, v + 0.010 * Math.sin(2*Math.PI*(2.1*u + 0.37))));
+
+  function cellFor(u, v) {
+    const z = zoneAtV(v);
+    if (z.kind !== 'layer') {
+      const slot = z.kind === 'comp' ? 0 : (SPECIAL_SLOT[z.kind] ?? 0);
+      return { cell: specOffset + slot, coarse: 60000 + zones.indexOf(z), zone: -1, colorObj: z.colorObj };
+    }
+    let sub = z.slices[z.slices.length - 1];
+    for (const s of z.slices) { if (u < s.u1) { sub = s; break; } }
+    const t = Math.min(0.999999, Math.max(0, (u - sub.u0) / Math.max(1e-6, sub.u1 - sub.u0)));
+    const slice = Math.min(S - 1, Math.floor(t * S));
+    return { cell: (z.il * 3 + sub.band) * S + slice, coarse: z.il * 3 + sub.band, zone: z.il, colorObj: sub.colorObj || z.colorObj };
+  }
+
+  function setN(index, a, lon, v) {
+    const th = (lon / gridLon) * Math.PI * 2;
+    const rr = R * Math.sin(a);
+    pos.set([rr * Math.cos(th), -R * Math.cos(a), rr * Math.sin(th)], index * 3);
+    const u = warpedU(lon / gridLon, v), wv = warpedV(v, lon / gridLon);
+    const c = cellFor(u, wv);
+    aCell[index]  = c.cell;
+    cellId[index] = c.coarse;
+    zoneId[index] = c.zone;
+    aZone[index]  = c.zone;
+    aColor.set(c.colorObj.toArray(), index * 3);
+    aRand[index] = Math.random();
+    aSize[index] = 2.8 + Math.random() * 1.5;
+  }
+
+  setN(0, 0, 0, 0);                          // south pole
+  setN(nodeCount - 1, Math.PI, 0, 1);        // north pole
+  for (let lat = 1; lat < gridLat; lat++) {
+    const v = lat / gridLat;
+    const a = Math.acos(1 - 2 * v);
+    for (let lon = 0; lon < gridLon; lon++) setN(nodeAt(lat, lon), a, lon, v);
+  }
+
+  // borders: mid-point crossings, exactly like the original shell outline
+  function borderGeometry(ids, sameZoneOnly) {
+    const segs = [];
+    const crossing = (from, to) => {
+      if (ids[from] === ids[to]) return null;
+      if (sameZoneOnly && zoneId[from] !== zoneId[to]) return null;
+      return [
+        (pos[from*3]   + pos[to*3])   * 0.5,
+        (pos[from*3+1] + pos[to*3+1]) * 0.5,
+        (pos[from*3+2] + pos[to*3+2]) * 0.5
+      ];
+    };
+    for (let lat = 1; lat < gridLat - 1; lat++) {
+      for (let lon = 0; lon < gridLon; lon++) {
+        const nw = nodeAt(lat, lon),     ne = nodeAt(lat, lon + 1);
+        const sw = nodeAt(lat + 1, lon), se = nodeAt(lat + 1, lon + 1);
+        const c = [crossing(nw, ne), crossing(ne, se), crossing(sw, se), crossing(nw, sw)].filter(Boolean);
+        if (c.length === 2) segs.push(...c[0], ...c[1]);
+        else if (c.length === 4) { segs.push(...c[0], ...c[1]); segs.push(...c[2], ...c[3]); }
+      }
+    }
+    const g = new THREE.BufferGeometry();
+    g.setAttribute('position', new THREE.Float32BufferAttribute(segs, 3));
+    return g;
+  }
+
+  group.add(new THREE.LineSegments(borderGeometry(cellId, true), new THREE.LineBasicMaterial({
+    color: 0x9bfaff, transparent: true, opacity: 0.40,
+    blending: THREE.AdditiveBlending, depthWrite: false
+  })));
+  group.add(new THREE.LineSegments(borderGeometry(zoneId, false), new THREE.LineBasicMaterial({
+    color: 0xcdefff, transparent: true, opacity: 0.8,
+    blending: THREE.AdditiveBlending, depthWrite: false
+  })));
+
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+  geo.setAttribute('aAct',    new THREE.BufferAttribute(aAct, 1));
+  geo.setAttribute('aColor',  new THREE.BufferAttribute(aColor, 3));
+  geo.setAttribute('aRand',   new THREE.BufferAttribute(aRand, 1));
+  geo.setAttribute('aSize',   new THREE.BufferAttribute(aSize, 1));
+  geo.setAttribute('aZone',   new THREE.BufferAttribute(aZone, 1));
+  const points = new THREE.Points(geo, new THREE.ShaderMaterial({
+    uniforms, vertexShader: vert, fragmentShader: frag,
+    transparent: true, depthWrite: false, blending: THREE.AdditiveBlending
+  }));
+  points.frustumCulled = false;
+  group.add(points);
+
+  scene.add(group);
+  brain = { group, aAct, aCell, points };
+
+  // ── MoE expert ring ──
+  if (viz.n_experts > 0 && viz.is_moe_layer.some(Boolean)) {
+    const nMoE = viz.is_moe_layer.filter(Boolean).length;
+    if (nMoE > 0) {
+      const expertCount = Math.min(viz.n_experts, 64);  // cap for rendering
+      const expertPos = new Float32Array(nMoE * expertCount * 3);
+      const expertAct = new Float32Array(nMoE * expertCount);
+      const expertRand = new Float32Array(nMoE * expertCount);
+      const expertColor = new Float32Array(nMoE * expertCount * 3);
+      const expertZone = new Float32Array(nMoE * expertCount);
+      const expertSize = new Float32Array(nMoE * expertCount);
+
+      const moeLayerIndices = [];
+      for (let i = 0; i < viz.L; i++) {
+        if (viz.is_moe_layer[i]) moeLayerIndices.push(i);
+      }
+
+      for (let li = 0; li < nMoE; li++) {
+        const layer = moeLayerIndices[li];
+        const v = (layer + 0.5) / viz.L;  // vertical position matches layer
+        const a = Math.acos(1 - 2 * v);
+        const rr = R * Math.sin(a) * 0.85;  // inner ring
+        const baseY = -R * Math.cos(a);
+        for (let e = 0; e < expertCount; e++) {
+          const th = (e / expertCount) * Math.PI * 2;
+          const idx = (li * expertCount + e);
+          expertPos[idx * 3]     = rr * Math.cos(th);
+          expertPos[idx * 3 + 1] = baseY;
+          expertPos[idx * 3 + 2] = rr * Math.sin(th);
+          expertRand[idx] = Math.random();
+          expertZone[idx] = layer;
+          expertSize[idx] = 1.8 + Math.random() * 0.8;
+          // Color by expert index (gradient from orange to red)
+          const t = e / expertCount;
+          const r = 0.8 + 0.2 * t;
+          const g = 0.4 * (1 - t);
+          const b = 0.1;
+          expertColor[idx * 3]     = r;
+          expertColor[idx * 3 + 1] = g;
+          expertColor[idx * 3 + 2] = b;
+        }
+      }
+
+      const expertGeo = new THREE.BufferGeometry();
+      expertGeo.setAttribute('position', new THREE.Float32BufferAttribute(expertPos, 3));
+      expertGeo.setAttribute('aAct', new THREE.Float32BufferAttribute(expertAct, 1));
+      expertGeo.setAttribute('aColor', new THREE.Float32BufferAttribute(expertColor, 3));
+      expertGeo.setAttribute('aRand', new THREE.Float32BufferAttribute(expertRand, 1));
+      expertGeo.setAttribute('aSize', new THREE.Float32BufferAttribute(expertSize, 1));
+      expertGeo.setAttribute('aZone', new THREE.Float32BufferAttribute(expertZone, 1));
+      const expertPoints = new THREE.Points(expertGeo, new THREE.ShaderMaterial({
+        uniforms, vertexShader: vert, fragmentShader: frag,
+        transparent: true, depthWrite: false, blending: THREE.AdditiveBlending
+      }));
+      expertPoints.frustumCulled = false;
+      group.add(expertPoints);
+      brain.expertRing = { points: expertPoints, geo: expertGeo, act: expertAct, nLayers: nMoE, nExperts: expertCount, layerIndices: moeLayerIndices };
+    }
+  }
+
+  // ── Token spotlight ring (pulsing ring at token position) ──
+  if (viz.vocab > 0 && viz.nt > 1) {
+    const ringPoints = 128;
+    const ringPos = new Float32Array(ringPoints * 3);
+    const ringAct = new Float32Array(ringPoints);
+    const ringColor = new Float32Array(ringPoints * 3);
+    const ringRand = new Float32Array(ringPoints);
+    const ringSize = new Float32Array(ringPoints);
+    const ringZone = new Float32Array(ringPoints);
+
+    // Place ring at the current active layer height, around the equator
+    const ringV = (viz.il + 0.5) / viz.L;
+    const ringA = Math.acos(1 - 2 * ringV);
+    const ringR = R * Math.sin(ringA) * 1.02;  // slightly outside the sphere
+    const ringY = -R * Math.cos(ringA);
+
+    for (let i = 0; i < ringPoints; i++) {
+      const th = (i / ringPoints) * Math.PI * 2;
+      ringPos[i * 3]     = ringR * Math.cos(th);
+      ringPos[i * 3 + 1] = ringY;
+      ringPos[i * 3 + 2] = ringR * Math.sin(th);
+      ringRand[i] = Math.random();
+      ringZone[i] = -1;
+      ringSize[i] = 2.0;
+      ringColor[i * 3]     = 0.9;
+      ringColor[i * 3 + 1] = 0.85;
+      ringColor[i * 3 + 2] = 0.2;
+    }
+
+    const ringGeo = new THREE.BufferGeometry();
+    ringGeo.setAttribute('position', new THREE.Float32BufferAttribute(ringPos, 3));
+    ringGeo.setAttribute('aAct', new THREE.Float32BufferAttribute(ringAct, 1));
+    ringGeo.setAttribute('aColor', new THREE.Float32BufferAttribute(ringColor, 3));
+    ringGeo.setAttribute('aRand', new THREE.Float32BufferAttribute(ringRand, 1));
+    ringGeo.setAttribute('aSize', new THREE.Float32BufferAttribute(ringSize, 1));
+    ringGeo.setAttribute('aZone', new THREE.Float32BufferAttribute(ringZone, 1));
+    const ringPoints3 = new THREE.Points(ringGeo, new THREE.ShaderMaterial({
+      uniforms, vertexShader: vert, fragmentShader: frag,
+      transparent: true, depthWrite: false, blending: THREE.AdditiveBlending
+    }));
+    ringPoints3.frustumCulled = false;
+    group.add(ringPoints3);
+    brain.tokenRing = { points: ringPoints3, geo: ringGeo, act: ringAct };
+  }
+
+  // ── HUD / legends ──
+  const layerZones = zones.filter(z => z.kind === 'layer').length;
+  $('zones').textContent = viz.mode === 'layers'
+    ? `${layerZones} layers × 3 bands × ${S}`
+    : `${zones.length} memory zones`;
+  viz.modelBytes = viz.components.reduce((s, c) => s + c.bytes, 0);
+
+  const legend = [];
+  if (viz.mode === 'layers') {
+    for (let b = 0; b < 3; b++) {
+      const el = document.createElement('span');
+      const dot = document.createElement('i');
+      dot.className = 'dot';
+      dot.style.background = BAND_COLOR[b];
+      dot.style.boxShadow = `0 0 6px ${BAND_COLOR[b]}`;
+      el.append(dot, `${BAND_NAME[b]} ×${S}`);
+      legend.push(el);
+    }
+    for (const k of ['embed', 'out', 'vis']) {
+      if (!zones.some(z => z.kind === k)) continue;
+      const el = document.createElement('span');
+      const dot = document.createElement('i');
+      dot.className = 'dot';
+      dot.style.background = SPECIAL_COLOR[k];
+      dot.style.boxShadow = `0 0 6px ${SPECIAL_COLOR[k]}`;
+      el.append(dot, k === 'embed' ? 'embedding' : k === 'out' ? 'lm head' : 'vision');
+      legend.push(el);
+    }
+  }
+  $('bandLegend').replaceChildren(...legend);
+  // Add MoE expert legend if applicable
+  if (viz.n_experts > 0) {
+    const moeEl = document.createElement('span');
+    const moeDot = document.createElement('i');
+    moeDot.className = 'dot';
+    moeDot.style.background = MOE_COLOR;
+    moeDot.style.boxShadow = `0 0 6px ${MOE_COLOR}`;
+    moeEl.append(moeDot, `MoE experts ×${viz.n_experts}`);
+    $('bandLegend').appendChild(moeEl);
+  }
+  $('componentLegend').replaceChildren(...viz.components.map((c, i) => {
+    const el = document.createElement('span');
+    const dot = document.createElement('i');
+    dot.className = 'dot';
+    dot.style.background = COMPONENT_COLORS[i % COMPONENT_COLORS.length];
+    el.append(dot, `${c.name} ${formatBytes(c.bytes)}`);
+    return el;
+  }));
+}
+
+/* ───────────────────────── activation heat ─────────────────────────
+   Raw slice RMS -> 0..1.2 heat, per layer+band, adaptive to each slice's own
+   running mean/variance (so quiet heads still show contrast).               */
+const stats = new Map();
+const lastHeat = new Map();       // il -> { a, f, r } for the HUD readout
+
+function heatOf(key, arr, S) {
+  let st = stats.get(key);
+  if (!st) {
+    st = { m: Float32Array.from(arr), v: new Float32Array(S), n: 0 };
+    for (let i = 0; i < S; i++) st.v[i] = (arr[i] * 0.35) ** 2;
+    stats.set(key, st);
+  }
+  let mean = 0;
+  for (let i = 0; i < S; i++) mean += arr[i];
+  mean = mean / S || 1e-9;
+  const alpha = st.n < 20 ? 0.15 : 0.02;
+  const out = new Float32Array(S);
+  for (let i = 0; i < S; i++) {
+    const x = arr[i], d = x - st.m[i];
+    const z = d / (Math.sqrt(st.v[i]) + 1e-9);
+    const conc = x / mean - 1;
+    out[i] = Math.min(1.2, 0.5 * Math.max(0, z) / 2.2 + 0.5 * Math.max(0, conc) / 1.4);
+    st.m[i] += alpha * d;
+    st.v[i] = (1 - alpha) * (st.v[i] + alpha * d * d);
+  }
+  st.n++;
+  return out;
+}
+
+function writeHeat(il, band, values) {
+  const S = viz.S;
+  const base = (il * 3 + band) * S;
+  for (let i = 0; i < S; i++) actFlat[base + i] = values[i];
+}
+
+function applyLayerFrame(f) {
+  if (!actFlat || !Number.isInteger(f.il) || f.il < 0 || f.il >= viz.L) return;
+  const S = viz.S;
+  const entry = lastHeat.get(f.il) || {};
+  if (f.a && f.a.length === S) { const h = heatOf(`${f.il}a`, f.a, S); writeHeat(f.il, B_ATTN, h); entry.a = h; }
+  if (f.f && f.f.length === S) { const h = heatOf(`${f.il}f`, f.f, S); writeHeat(f.il, B_FFN,  h); entry.f = h; }
+  if (f.r && f.r.length === S) { const h = heatOf(`${f.il}r`, f.r, S); writeHeat(f.il, B_RES,  h); entry.r = h; }
+  lastHeat.set(f.il, entry);
+
+  const spec = viz.L * 3 * S;
+  if (f.il === 0) actFlat[spec + SPECIAL_SLOT.embed] = Math.max(actFlat[spec + SPECIAL_SLOT.embed], f.nt > 1 ? 1.0 : 0.65);
+  if (f.il === viz.L - 1) actFlat[spec + SPECIAL_SLOT.out] = 1.0;
+
+  // MoE expert activation — render as a ring within the layer
+  if (f.moe && f.moe.length > 0) {
+    viz.moe_gate = f.moe;
+    // Normalize and write to MoE band for this layer
+    const maxG = Math.max(...f.moe, 1e-9);
+    for (let e = 0; e < f.moe.length; e++) {
+      const heat = f.moe[e] / maxG;
+      // Write to MoE band: layer * 3 + B_MOE = il*3+4
+      // But we only have 3 bands (0,1,2) + B_SPEC(3) = 4 slots. Use B_SPEC as MoE carrier.
+      // Actually, write to a separate MoE activation array.
+      if (!viz._moeHeat) viz._moeHeat = new Float32Array(viz.L);
+      viz._moeHeat[f.il] = Math.max(viz._moeHeat[f.il], heat);
+    }
+  }
+  if (f.routed && f.routed.length > 0) {
+    viz.moe_routed = f.routed;
+  }
+
+  viz.il = f.il;
+  viz.step = f.s ?? viz.step;
+  viz.nt = f.nt ?? 1;
+  viz.layerUs = f.d ?? 0;
+  viz.live = true;
+  viz.liveAt = performance.now();
+}
+
+function applyVisionFrame(f) {
+  if (!actFlat || !f.r) return;
+  const S = viz.S;
+  const h = heatOf('vis', f.r, S);
+  let peak = 0;
+  for (let i = 0; i < h.length; i++) peak = Math.max(peak, h[i]);
+  actFlat[viz.L * 3 * S + SPECIAL_SLOT.vis] = Math.max(actFlat[viz.L * 3 * S + SPECIAL_SLOT.vis], peak);
+}
+
+/* ───────────────────────── simulation (no server) ───────────────────────── */
+const sim = { front: 0, seed: 1, think: 0, amp: 0.85 };
+function strHash(s) { let h = 2166136261; for (let i = 0; i < s.length; i++) h = Math.imul(h ^ s.charCodeAt(i), 16777619); return (h >>> 0); }
+function hash3(a, b, c) {
+  let h = Math.imul(a | 0, 374761393) ^ Math.imul(b | 0, 668265263) ^ Math.imul(c | 0, 2147483629);
+  h = Math.imul(h ^ (h >>> 13), 1274126177); h ^= h >>> 16;
+  return (h >>> 0) / 4294967296;
+}
+function stepSimulation(dt, now) {
+  if (!actFlat) return;
+  const L = viz.L, S = viz.S;
+  const period = sim.think ? 1.05 : 0.75;
+  sim.front += dt * ((L + 5) / period);
+  if (sim.front > L + 4) { sim.front = -3; sim.seed = (sim.seed * 1103515245 + 12345) >>> 0; }
+  const amp = sim.amp;
+  const tick = Math.floor(now * 8);
+  for (let il = 0; il < L; il++) {
+    const d = il - sim.front;
+    const env = Math.exp(-(d * d) / (2 * 1.6 * 1.6)) * amp;
+    for (let band = 0; band < 3; band++) {
+      const base = (il * 3 + band) * S;
+      const gain = band === 0 ? 1.0 : band === 1 ? 0.85 : 0.6;
+      for (let s = 0; s < S; s++) {
+        const j = hash3(il * 31 + band * 7 + sim.seed, s, tick >> 2);
+        actFlat[base + s] = Math.max(actFlat[base + s], env * gain * (0.35 + 0.85 * j));
+      }
+    }
+  }
+  const spec = L * 3 * S;
+  actFlat[spec + SPECIAL_SLOT.embed] = Math.max(actFlat[spec + SPECIAL_SLOT.embed], amp * 0.8);
+  const lastFront = sim.front >= L - 1 ? 1.0 : 0.0;
+  actFlat[spec + SPECIAL_SLOT.out] = Math.max(actFlat[spec + SPECIAL_SLOT.out], lastFront * amp);
+  if (viz.vision) actFlat[spec + SPECIAL_SLOT.vis] = Math.max(actFlat[spec + SPECIAL_SLOT.vis], 0.25 + 0.25 * Math.sin(now * 0.7));
+  viz.il = Math.max(0, Math.min(L - 1, Math.round(sim.front)));
+  viz.step = Math.floor(now / period);
+  viz.nt = 1;
+  viz.layerUs = 0;
+}
+
+/* ───────────────────────── engine ───────────────────────── */
+let frontSmooth = -1;
+function stepEngine(dt, now) {
+  if (!brain || !actFlat) return;
+  const L = viz.L;
+  const k = Math.exp(-dt * 1.1);                      // heat decay (half life ~0.6 s)
+  const live = performance.now() - (viz.liveAt || 0) < 1500;
+  if (!live) { for (let i = 0; i < actFlat.length; i++) actFlat[i] *= k; }
+
+  const { aAct, aCell, points } = brain;
+  for (let i = 0; i < aCell.length; i++) aAct[i] = actFlat[aCell[i]];
+  points.geometry.attributes.aAct.needsUpdate = true;
+
+  // Update MoE expert ring activations
+  if (brain.expertRing && viz._moeHeat) {
+    const er = brain.expertRing;
+    const act = er.act;
+    for (let li = 0; li < er.nLayers; li++) {
+      const heat = viz._moeHeat[er.layerIndices[li]] || 0;
+      // All experts in this layer share the layer's gate activation
+      for (let e = 0; e < er.nExperts; e++) {
+        act[li * er.nExperts + e] = heat;
+      }
+    }
+    er.geo.attributes.aAct.needsUpdate = true;
+    // Decay MoE heat
+    for (let i = 0; i < er.nLayers; i++) viz._moeHeat[er.layerIndices[i]] *= k;
+  }
+
+  // Update token spotlight ring
+  if (brain.tokenRing && live) {
+    const tr = brain.tokenRing;
+    const act = tr.act;
+    for (let i = 0; i < act.length; i++) {
+      act[i] = 0.4 + 0.3 * Math.sin(now * 4 + i * 0.2);
+    }
+    tr.geo.attributes.aAct.needsUpdate = true;
+  }
+
+  const target = viz.mode === 'layers' ? (live ? viz.il : sim.front) : -99;
+  if (frontSmooth < -10) frontSmooth = target;
+  frontSmooth += (target - frontSmooth) * Math.min(1, dt * 8);
+  uniforms.uFront.value = frontSmooth;
+  const ramp = frontSmooth < 0 ? 0 : 1;
+  uniforms.uFrontAmp.value += ((live || viz.mode === 'layers' ? ramp * 0.85 : 0) - uniforms.uFrontAmp.value) * Math.min(1, dt * 4);
+  uniforms.uWaveCol.value.set(viz.think ? '#c08cff' : '#2ff3ff');
+}
+
+/* ───────────────────────── controls / HUD ───────────────────────── */
+$('layBtn').onclick = () => { viz.mode = 'layers'; $('layBtn').classList.add('on'); $('memBtn').classList.remove('on'); buildBrain(); };
+$('memBtn').onclick = () => { viz.mode = 'memory'; $('memBtn').classList.add('on'); $('layBtn').classList.remove('on'); buildBrain(); };
+
+function updateHud() {
+  const L = viz.L, S = viz.S;
+  const il = Math.max(0, Math.min(L - 1, viz.il));
+  $('layers').textContent = L > 0 ? L : '—';
+  $('front').textContent = L > 0 ? `L${il + 1}/${L}` : '—';
+  const recr = viz.recr[il] === 1;
+  $('ltype').textContent = viz.recr.length ? (recr ? 'linear/SSM' : 'full attention') : '—';
+  $('ltype').style.color = viz.recr.length ? (recr ? '#5ee08a' : '#2ff3ff') : '';
+  $('lms').textContent = viz.layerUs > 0 ? `${(viz.layerUs / 1000).toFixed(2)} ms` : '—';
+  const h = lastHeat.get(il);
+  $('hhead').textContent = h?.a ? `#${argmax(h.a) + 1}/${S}` : '—';
+  $('hnrn').textContent = h?.f ? `#${argmax(h.f) + 1}/${S}` : '—';
+  // MoE display
+  if (viz.n_experts > 0) {
+    $('moeInfo').textContent = `${viz.n_experts} total, top-${viz.top_k_experts}`;
+    $('moeInfo').style.color = '#ff9d42';
+    if (viz.moe_routed && viz.moe_routed.length > 0) {
+      $('moeActive').textContent = viz.moe_routed.slice(0, 8).join(',') + (viz.moe_routed.length > 8 ? '…' : '');
+    } else if (viz.is_moe_layer[il]) {
+      $('moeActive').textContent = '—';
+    }
+  } else {
+    $('moeInfo').textContent = '—';
+    $('moeActive').textContent = '—';
+  }
+  const pb = viz.layerBytes[il];
+  if (pb) {
+    const here = pb.a + pb.f + pb.o;
+    viz.bytesHere = here;
+    $('parts').textContent = `${formatBytes(here)}${viz.modelBytes ? ' · ' + (100 * here / viz.modelBytes).toFixed(1) + '% of weights' : ''}`;
+  }
+  if (viz.live) {
+    $('source').textContent = `LIVE ${viz.fps} f/s`;
+    $('source').style.color = '#7dff9a';
+  } else {
+    $('source').textContent = 'SIM';
+    $('source').style.color = '#ff7a1a';
+  }
+}
+const argmax = a => { let best = 0; for (let i = 1; i < a.length; i++) if (a[i] > a[best]) best = i; return best; };
+setInterval(updateHud, 250);
+
+/* ───────────────────────── live stream ───────────────────────── */
+const live = { es: null, retry: null, meta: null, gen: 0 };
+function setStatus(s) { $('status').textContent = s; }
+
+function applyMeta(f) {
+  live.meta = f;
+  viz.L = (Number.isInteger(f.L) && f.L > 0) ? f.L : 32;
+  viz.S = (Number.isInteger(f.S) && f.S >= 2) ? f.S : 16;
+  viz.heads = f.heads || viz.S;
+  viz.hkv = f.hkv || 0;
+  viz.E = f.E || 0;
+  viz.nff = f.nff || 0;
+  viz.vocab = f.vocab || 0;
+  viz.vision = !!f.vision;
+  viz.fine = f.fine !== false;
+  viz.desc = f.desc || '';
+  viz.recr = Array.isArray(f.recr) ? f.recr : [];
+  viz.components = Array.isArray(f.components) ? f.components : [];
+  const lb = Array.isArray(f.layers) ? f.layers : [];
+  viz.layerBytes = [];
+  for (let i = 0; i < viz.L; i++) viz.layerBytes.push(lb[i] || { a:1, f:1, o:1 });
+  // MoE fields
+  viz.n_experts = f.n_experts || 0;
+  viz.top_k_experts = f.top_k_experts || 1;
+  viz.is_moe_layer = Array.isArray(f.is_moe) ? f.is_moe : new Array(viz.L).fill(0);
+  // KV cache (optional, from future extensions)
+  viz.kv_size = f.kv_size || 0;
+  viz.kv_used = f.kv_used || 0;
+  $('model').textContent = (viz.desc || 'model').slice(0, 40);
+  $('model').title = viz.desc;
+  viz.gotMeta = true;
+  stats.clear(); lastHeat.clear();
+  buildBrain();
+  setStatus('streaming');
+}
+
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+
+/* Linear connect: one URL (the one in the endpoint box), one step at a time.
+     1. poll {endpoint}/neural/meta until the server answers (fixed interval)
+     2. open the {endpoint}/neural SSE stream
+     3. if the stream closes, go back to step 1
+   No port list, no probing of other hosts. Editing the endpoint box restarts it. */
+async function connectLive() {
+  const gen = ++live.gen;
+  if (live.es) { live.es.close(); live.es = null; }
+  clearTimeout(live.retry);
+  viz.live = false;
+  const url = base();
+  if (!url) { setStatus('set an endpoint'); return; }
+
+  while (gen === live.gen) {
+    try {
+      const r = await fetch(url + '/neural/meta', { cache: 'no-store' });
+      if (r.ok || r.status === 404) break;          // 404 = older server, meta arrives in-band
+      setStatus('HTTP ' + r.status + ' — retrying');
+    } catch {
+      setStatus('waiting for ' + url);
+    }
+    await sleep(POLL_MS);
+  }
+  if (gen !== live.gen) return;                      // endpoint changed while polling
+
+  let es;
+  try { es = new EventSource(url + '/neural'); }
+  catch { live.retry = setTimeout(connectLive, POLL_MS); return; }
+  live.es = es;
+  es.onopen = () => setStatus('connected');
+  es.onmessage = ev => {
+    if (gen !== live.gen) return;
+    let f; try { f = JSON.parse(ev.data); } catch { return; }
+    viz.frames++;
+    if (f.t === 'meta') applyMeta(f);
+    else if (f.t === 'L') applyLayerFrame(f);
+    else if (f.t === 'V') applyVisionFrame(f);
+  };
+  es.onerror = () => {
+    if (gen !== live.gen) return;
+    viz.live = false;
+    setStatus('stream lost — retrying');
+    if (es.readyState === 2) { es.close(); live.es = null; live.retry = setTimeout(connectLive, POLL_MS); }
+  };
+}
+setInterval(() => {
+  viz.fps = viz.frames * 2; viz.frames = 0;
+  if (viz.live && performance.now() - (viz.liveAt || 0) > 1500) { viz.live = false; }
+}, 500);
+
+/* ───────────────────────── llama.cpp client ───────────────────────── */
+const history = [];
+let abortCtl = null, imageDataUrl = null;
+let tokCount = 0, tStart = 0, thinkUntil = 0;
+
+const base = () => $('endpoint').value.trim().replace(/\/+$/, '');
+
+async function probeServer(updateField) {
+  try {
+    const r = await fetch(base() + '/props');
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    const j = await r.json();
+    const id = j.model_alias || j.model_path || 'connected';
+    $('model').textContent = id.split(/[\\/]/).pop().slice(0, 40);
+    $('model').title = id;
+    if (Number.isInteger(j.n_layer) && j.n_layer > 0) {
+      $('layers').textContent = j.n_layer;
+      // before the stream sends its meta frame, shape the sphere to the real layer count
+      if (!viz.gotMeta && j.n_layer !== viz.L) { viz.L = j.n_layer; buildBrain(); }
+    }
+    if (updateField) store.set('ns_endpoint', base());
+    return true;
+  } catch {
+    setStatus('server not reachable');
+    return false;
+  }
+}
+
+async function send() {
+  const text = $('prompt').value.trim();
+  if (!text || abortCtl) return;
+  $('prompt').value = '';
+  const content = imageDataUrl
+    ? [{ type: 'text', text }, { type: 'image_url', image_url: { url: imageDataUrl } }]
+    : text;
+  history.push({ role: 'user', content });
+  imageDataUrl = null; $('imgname').textContent = '';
+
+  const out = $('out'); out.style.display = 'block';
+  const userDiv = document.createElement('div');
+  userDiv.style.cssText = 'color:#2ff3ff;margin-top:8px';
+  userDiv.textContent = '> ' + text;
+  out.appendChild(userDiv);
+  const ans = document.createElement('div'); ans.style.marginTop = '4px'; out.appendChild(ans);
+  let answerSpan = null, answerText = '';
+
+  abortCtl = new AbortController();
+  $('send').style.display = 'none'; $('stop').style.display = 'inline-block';
+  setStatus('prefill…');
+  tokCount = 0; tStart = 0; $('ntok').textContent = '0'; $('tps').textContent = '0.0';
+  if (!viz.live) sim.amp = 0.85;
+
+  let lastTok = performance.now() / 1000, avgInterval = 0.12;
+  try {
+    const res = await fetch(base() + '/v1/chat/completions', {
+      method: 'POST', signal: abortCtl.signal,
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ messages: history, stream: true, temperature: 0.6, top_k: 20, top_p: 0.95, min_p: 0.0 })
+    });
+    if (!res.ok) throw new Error('HTTP ' + res.status + ' ' + (await res.text()).slice(0, 160));
+    const reader = res.body.getReader();
+    const dec = new TextDecoder();
+    let buf = '';
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buf += dec.decode(value, { stream: true });
+      let nl;
+      while ((nl = buf.indexOf('\n')) >= 0) {
+        const line = buf.slice(0, nl).trim(); buf = buf.slice(nl + 1);
+        if (!line.startsWith('data:')) continue;
+        const data = line.slice(5).trim();
+        if (data === '[DONE]') continue;
+        let j; try { j = JSON.parse(data); } catch { continue; }
+        const ch = j.choices?.[0]; if (!ch) continue;
+        const delta = ch.delta || {};
+        const piece = delta.content || '';
+        const reasoning = delta.reasoning_content || '';
+        if (!piece && !reasoning) continue;
+
+        if (!tokCount) { tStart = performance.now(); setStatus('generating'); }
+        tokCount++;
+        const now = performance.now() / 1000;
+        avgInterval = avgInterval * 0.8 + (now - lastTok) * 0.2; lastTok = now;
+
+        if (!answerSpan) { answerSpan = document.createElement('span'); ans.appendChild(answerSpan); }
+        if (reasoning) {
+          viz.think = true; thinkUntil = performance.now() + 1200;
+          const t = document.createElement('span');
+          t.className = 'think';
+          t.textContent = reasoning;
+          out.appendChild(t);
+        }
+        if (piece) {
+          answerSpan.textContent += piece;
+          answerText += piece;
+        }
+        out.scrollTop = out.scrollHeight;
+        $('ntok').textContent = tokCount;
+        $('tps').textContent = (tokCount / Math.max(0.001, (performance.now() - tStart) / 1000)).toFixed(1);
+      }
+    }
+    history.push({ role: 'assistant', content: answerText });
+    setStatus('idle');
+  } catch (e) {
+    if (e.name === 'AbortError') setStatus('stopped');
+    else { setStatus('error'); ans.style.color = '#ff7a1a'; ans.textContent = String(e.message || e); }
+    if (history[history.length - 1]?.role === 'user' && !answerText) history.pop();
+  } finally {
+    abortCtl = null;
+    $('send').style.display = ''; $('stop').style.display = 'none';
+  }
+}
+
+$('send').onclick = send;
+$('stop').onclick = () => abortCtl?.abort();
+$('prompt').addEventListener('keydown', e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send(); } });
+$('attach').onclick = () => $('file').click();
+$('file').onchange = e => {
+  const f = e.target.files[0]; if (!f) return;
+  const r = new FileReader();
+  r.onload = () => { imageDataUrl = r.result; $('imgname').textContent = f.name; };
+  r.readAsDataURL(f);
+};
+$('endpoint').onchange = () => {
+  store.set('ns_endpoint', base());
+  viz.gotMeta = false;
+  probeServer(true);
+  connectLive();
+};
+
+addEventListener('resize', () => {
+  camera.aspect = innerWidth / innerHeight; camera.updateProjectionMatrix();
+  renderer.setSize(innerWidth, innerHeight); composer.setSize(innerWidth, innerHeight);
+  bloom.setSize(innerWidth, innerHeight);
+});
+
+/* ───────────────────────── main loop ───────────────────────── */
+buildBrain();
+{
+  // use the endpoint the user last entered (or the field's default) — nothing is auto-probed
+  const saved = store.get('ns_endpoint', '');
+  if (saved) $('endpoint').value = saved;
+  probeServer();
+  connectLive();
+}
+
+const clock = new THREE.Clock();
+function frame() {
+  const dt = Math.min(0.05, clock.getDelta());
+  const now = performance.now() / 1000;
+  uniforms.uTime.value = now;
+  if (!viz.live) stepSimulation(dt, now);
+  if (viz.think && performance.now() > thinkUntil) viz.think = false;
+  stepEngine(dt, now);
+  // Thinking phase: increase bloom for purple glow
+  const targetBloom = viz.think ? 2.0 : 1.35;
+  bloom.strength += (targetBloom - bloom.strength) * dt * 3;
+  $('pass').textContent = viz.live ? (viz.nt > 1 ? `prefill ×${viz.nt}` : 'decode') : (viz.think ? 'thinking' : 'simulated');
+  controls.update();
+  composer.render();
+  requestAnimationFrame(frame);
+}
+frame();
+</script>
+</body>
+</html>
