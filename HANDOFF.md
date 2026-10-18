@@ -112,7 +112,11 @@ Building a visualizer particle sphere that shows the inner workings of a VLM/LLM
 7. **Performance tuning** — ensure smooth animation with real model data at full layer count
 
 ## Constraints
-- NEVER interact with llama-server on port 8080 (it's the user's brain)
+- NEVER interact with llama-server on port 8080 (it's YOUR BRAIN)
 - Port 8081 is safe to test against
-- Model files are at `F:/aimodels/unsloth/Qwen3.6-35B-A3B-MTP-GGUF/`
+
+- run the test llama-server like this: 
+PS C:\Users\joshr\Downloads\ThinkingMachine> .\llamacppstuff\llama-server.exe -m .\unsloth\Qwen3.5-4B-MTP-GGUF\Qwen3.5-4B-Q8_0.gguf --host 127.0.0.1 --port 8081 --n-gpu-layers -1 -c 2048 -np 1 -fa on --jinja -ctk q8_0 -ctv q8_0 -b 2048 -ub 2048 --kv-unified --ctx-checkpoints 64 --temp 0.6 --top-k 20 --top-p 0.95 --min-p 0.0
+
+
 - All paths use forward slashes for shell commands, or raw strings for Windows paths
