@@ -337,6 +337,7 @@ function layoutMemory() {
 
   return regions.map(r => ({
     kind:'comp', il:-1, bytes:r.bytes, name:r.name,
+    label: r.name,
     color: COMPONENT_COLORS[r.index % COMPONENT_COLORS.length],
     v0: r.y, v1: r.y + r.h,
     slices: [{ band: CT_EMBED, u0: r.x, u1: r.x + r.w, color: COMPONENT_COLORS[r.index % COMPONENT_COLORS.length] }]
@@ -654,30 +655,9 @@ function stepEngine(dt, now) {
   for (let i = 0; i < aCell.length; i++) aAct[i] = actFlat[aCell[i]];
   points.geometry.attributes.aAct.needsUpdate = true;
 
-  // Update MoE expert ring activations
-  if (brain.expertRing && viz._moeHeat) {
-    const er = brain.expertRing;
-    const act = er.act;
-    for (let li = 0; li < er.nLayers; li++) {
-      const heat = viz._moeHeat[er.layerIndices[li]] || 0;
-      // All experts in this layer share the layer's gate activation
-      for (let e = 0; e < er.nExperts; e++) {
-        act[li * er.nExperts + e] = heat;
-      }
-    }
-    er.geo.attributes.aAct.needsUpdate = true;
-    // Decay MoE heat
-    for (let i = 0; i < er.nLayers; i++) viz._moeHeat[er.layerIndices[i]] *= k;
-  }
-
-  // Update token spotlight ring
-  if (brain.tokenRing && live) {
-    const tr = brain.tokenRing;
-    const act = tr.act;
-    for (let i = 0; i < act.length; i++) {
-      act[i] = 0.4 + 0.3 * Math.sin(now * 4 + i * 0.2);
-    }
-    tr.geo.attributes.aAct.needsUpdate = true;
+  // Decay MoE heat
+  if (viz._moeHeat) {
+    for (let i = 0; i < viz._moeHeat.length; i++) viz._moeHeat[i] *= k;
   }
 
   const target = viz.mode === 'layers' ? (live ? viz.il : sim.front) : -99;
