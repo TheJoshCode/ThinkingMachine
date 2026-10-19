@@ -401,8 +401,10 @@ function buildBrain() {
     const z = zoneAtV(v);
     if (z.kind !== 'layer') {
       // Special zone (embed / out / vis) — use special slot
-      const slot = z.kind === 'comp' ? 0 : (z.kind === 'vis' ? 2 : 1);
-      return { cell: specOffset + slot, zone: zones.indexOf(z), colorObj: z.colorObj };
+      const slot = (z.kind === 'vis') ? SPECIAL_SLOT.vis
+                 : (z.kind === 'out') ? SPECIAL_SLOT.out
+                 : SPECIAL_SLOT.embed;          // embed + memory-view comps
+      return { cell: L + slot, zone: zones.indexOf(z), colorObj: z.colorObj };
     }
     // Layer continent: find which sub-region (attn / ffn / residual) this u maps to
     let sub = z.slices[z.slices.length - 1];
@@ -663,12 +665,16 @@ function stepEngine(dt, now) {
     for (let i = 0; i < viz._moeHeat.length; i++) viz._moeHeat[i] *= k;
   }
 
-  const target = viz.mode === 'layers' ? (live ? viz.il : sim.front) : -99;
-  if (frontSmooth < -10) frontSmooth = target;
-  frontSmooth += (target - frontSmooth) * Math.min(1, dt * 8);
+  // idle (no live frames): no wave front, everything stays dim
+  const target = (viz.mode === 'layers' && live) ? viz.il : -99;
+  if (target < -10) frontSmooth = -99;
+  else {
+    if (frontSmooth < -10) frontSmooth = target;
+    frontSmooth += (target - frontSmooth) * Math.min(1, dt * 8);
+  }
   uniforms.uFront.value = frontSmooth;
   const ramp = frontSmooth < 0 ? 0 : 1;
-  uniforms.uFrontAmp.value += ((live || viz.mode === 'layers' ? ramp * 0.85 : 0) - uniforms.uFrontAmp.value) * Math.min(1, dt * 4);
+  uniforms.uFrontAmp.value += ((live && viz.mode === 'layers' ? ramp * 0.85 : 0) - uniforms.uFrontAmp.value) * Math.min(1, dt * 4);
   uniforms.uWaveCol.value.set(viz.think ? '#c08cff' : '#2ff3ff');
 }
 
@@ -711,7 +717,7 @@ function updateHud() {
     $('source').textContent = `LIVE ${viz.fps} f/s`;
     $('source').style.color = '#7dff9a';
   } else {
-    $('source').textContent = 'SIM';
+    $('source').textContent = 'IDLE';
     $('source').style.color = '#ff7a1a';
   }
 }
@@ -962,13 +968,12 @@ function frame() {
   const dt = Math.min(0.05, clock.getDelta());
   const now = performance.now() / 1000;
   uniforms.uTime.value = now;
-  if (!viz.live) stepSimulation(dt, now);
   if (viz.think && performance.now() > thinkUntil) viz.think = false;
   stepEngine(dt, now);
   // Thinking phase: increase bloom for purple glow
   const targetBloom = viz.think ? 2.0 : 1.35;
   bloom.strength += (targetBloom - bloom.strength) * dt * 3;
-  $('pass').textContent = viz.live ? (viz.nt > 1 ? `prefill ×${viz.nt}` : 'decode') : (viz.think ? 'thinking' : 'simulated');
+  $('pass').textContent = viz.live ? (viz.nt > 1 ? `prefill ×${viz.nt}` : 'decode') : 'idle';
   controls.update();
   composer.render();
   requestAnimationFrame(frame);
