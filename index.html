@@ -771,8 +771,11 @@ async function connectLive() {
       const r = await fetch(url + '/neural/meta', { cache: 'no-store' });
       if (r.ok || r.status === 404) break;          // 404 = older server, meta arrives in-band
       setStatus('HTTP ' + r.status + ' — retrying');
-    } catch {
-      setStatus('waiting for ' + url);
+    } catch (e) {
+      const isCors = /NetworkError|Failed to fetch|cors/i.test(e?.message || '');
+      setStatus(isCors
+        ? 'CORS blocked — restart server with --cors-origins localhost'
+        : 'waiting for ' + url);
     }
     await sleep(POLL_MS);
   }
@@ -787,6 +790,7 @@ async function connectLive() {
     if (gen !== live.gen) return;
     let f; try { f = JSON.parse(ev.data); } catch { return; }
     viz.frames++;
+    console.log('[neural] frame:', f.t, f.il != null ? 'L' + f.il : '', f.nt != null ? f.nt + 'tok' : '');
     if (f.t === 'meta') applyMeta(f);
     else if (f.t === 'L') applyLayerFrame(f);
     else if (f.t === 'V') applyVisionFrame(f);
