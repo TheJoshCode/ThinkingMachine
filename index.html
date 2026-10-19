@@ -44,6 +44,12 @@
   button.stop { color:var(--orange); border-color:var(--orange); display:none; }
   button.mini { padding:4px 7px; font-size:9px; }
   button.mini.on { background:rgba(47,243,255,.3); color:#fff; }
+  #tip { position:fixed; display:none; pointer-events:none; z-index:40; max-width:260px;
+    background:rgba(5,8,14,.92); border:1px solid rgba(47,243,255,.45); border-radius:4px;
+    padding:7px 10px; font-size:11px; line-height:1.5; letter-spacing:.04em;
+    box-shadow:0 0 14px rgba(47,243,255,.2); }
+  #tip .tt { font-weight:600; margin-bottom:2px; }
+  #tip .tb { opacity:.75; }
   #imgname { font-size:10px; opacity:.6; max-width:80px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
   #attach { padding:8px 10px; }
   #boot { position:fixed; inset:0; display:none; place-items:center; background:rgba(0,0,0,.92);
@@ -80,6 +86,7 @@
 <body>
 <canvas id="c"></canvas>
 <div id="boot"></div>
+<div id="tip"></div>
 
 <div id="hud" class="panel">
   <h1>NEURAL SPHERE</h1>
@@ -481,7 +488,15 @@ function buildBrain() {
   group.add(points);
 
   scene.add(group);
-  brain = { group, aAct, aCell, points };
+  // hover lookup: raw (u = longitude fraction, v = height fraction) -> zone + sub-region
+  const pick = (uRaw, vRaw) => {
+    const u = warpedU(uRaw, vRaw), wv = warpedV(vRaw, uRaw);
+    const z = zoneAtV(wv);
+    let sub = z.slices[z.slices.length - 1];
+    for (const s of z.slices) { if (u < s.u1) { sub = s; break; } }
+    return { z, sub };
+  };
+  brain = { group, aAct, aCell, points, pick };
 
   // ── HUD / legends ──
   const layerZones = zones.filter(z => z.kind === 'layer').length;
@@ -946,6 +961,49 @@ $('endpoint').onchange = () => {
   probeServer(true);
   connectLive();
 };
+
+/* ───────────────────────── hover tooltip ───────────────────────── */
+const tip = $('tip');
+const tipRay = new THREE.Raycaster();
+const tipMouse = new THREE.Vector2();
+const tipSphere = new THREE.Sphere(new THREE.Vector3(), R);
+const tipHit = new THREE.Vector3();
+function tipInfo(z, sub) {
+  const col = sub.color || z.color;
+  if (z.kind === 'layer') {
+    const il = z.il, p = z.parts || {};
+    const recr = viz.recr[il] === 1;
+    const moe = viz.n_experts > 0 && viz.is_moe_layer[il];
+    const head = `Layer ${il + 1}/${viz.L}`;
+    if (sub.band === CT_ATTN) return { col, t: `${head} · ${recr ? 'Linear attention / SSM' : 'Attention'}`,
+      b: `${recr ? 'Recurrent state mixing' : 'Q/K/V/output projections — which tokens each head reads'}\n${formatBytes(p.a || 0)}` };
+    if (sub.band === CT_FFN) return { col, t: `${head} · ${moe ? 'MoE feed-forward' : 'Feed-forward'}`,
+      b: `${moe ? `Router picks top-${viz.top_k_experts} of ${viz.n_experts} experts per token` : 'MLP neurons — per-token transform'}\n${formatBytes(p.f || 0)}` };
+    return { col, t: `${head} · Residual / output`, b: `Running hidden state passed to the next layer\n${formatBytes(p.o || 0)}` };
+  }
+  if (z.kind === 'embed') return { col, t: 'Token embedding', b: `Maps token ids to vectors\n${formatBytes(z.bytes)}` };
+  if (z.kind === 'out')   return { col, t: 'Output head', b: `Hidden state → vocabulary logits\n${formatBytes(z.bytes)}` };
+  if (z.kind === 'vis')   return { col, t: 'Vision encoder', b: `Image patches → embeddings\n${formatBytes(z.bytes)}` };
+  return { col, t: z.name || z.label || 'component', b: formatBytes(z.bytes) };
+}
+canvas.addEventListener('pointermove', e => {
+  if (!brain || e.buttons) { tip.style.display = 'none'; return; }
+  tipMouse.set(e.clientX / innerWidth * 2 - 1, -(e.clientY / innerHeight) * 2 + 1);
+  tipRay.setFromCamera(tipMouse, camera);
+  if (!tipRay.ray.intersectSphere(tipSphere, tipHit)) { tip.style.display = 'none'; return; }
+  const u = ((Math.atan2(tipHit.z, tipHit.x) / (Math.PI * 2)) % 1 + 1) % 1;
+  const v = Math.max(0, Math.min(0.999999, (1 + tipHit.y / R) / 2));
+  const { z, sub } = brain.pick(u, v);
+  const info = tipInfo(z, sub);
+  const t = document.createElement('div'); t.className = 'tt'; t.textContent = info.t; t.style.color = info.col;
+  const b = document.createElement('div'); b.className = 'tb'; b.style.whiteSpace = 'pre-line'; b.textContent = info.b;
+  tip.replaceChildren(t, b);
+  tip.style.display = 'block';
+  const w = tip.offsetWidth, h = tip.offsetHeight;
+  tip.style.left = Math.min(e.clientX + 16, innerWidth - w - 8) + 'px';
+  tip.style.top  = Math.min(e.clientY + 16, innerHeight - h - 8) + 'px';
+});
+canvas.addEventListener('pointerleave', () => { tip.style.display = 'none'; });
 
 addEventListener('resize', () => {
   camera.aspect = innerWidth / innerHeight; camera.updateProjectionMatrix();
