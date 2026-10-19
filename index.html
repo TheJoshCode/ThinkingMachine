@@ -116,6 +116,8 @@
     <span><input id="idleBr" type="range" min="0" max="3" step="0.05" value="1"> <b id="idleBrV">1.00</b></span></div>
   <div class="row"><label>active brightness</label>
     <span><input id="actBr" type="range" min="0" max="3" step="0.05" value="1"> <b id="actBrV">1.00</b></span></div>
+  <div class="row"><label>line brightness</label>
+    <span><input id="lineBr" type="range" min="0" max="3" step="0.05" value="1"> <b id="lineBrV">1.00</b></span></div>
   <div class="row" style="margin-top:8px"><label>layout</label>
     <span><button id="layBtn" class="mini on">layers</button> <button id="memBtn" class="mini">memory</button></span>
   </div>
@@ -227,6 +229,7 @@ const viz = {
 };
 
 let brain = null;
+let lineBr = 1.0;                // line brightness multiplier (HUD slider)
 let actFlat = null;              // L (+3 special slots) activation heat, written by frames / simulation
 const uniforms = {
   uTime:  { value: 0 },
@@ -476,10 +479,14 @@ function buildBrain() {
   }
 
   // Only draw continent borders (zoneId), not intra-band borders
-  group.add(new THREE.LineSegments(borderGeometry(zoneId), new THREE.LineBasicMaterial({
-    color: 0x9bfaff, transparent: true, opacity: 0.25,
-    blending: THREE.AdditiveBlending, depthWrite: false
-  })));
+  const lineMats = [];
+  const mkLine = (geo, base, opts) => {
+    const m = new THREE.LineBasicMaterial({ ...opts, transparent: true, opacity: base * lineBr,
+      blending: THREE.AdditiveBlending, depthWrite: false });
+    m.userData.base = base; lineMats.push(m);
+    return new THREE.LineSegments(geo, m);
+  };
+  group.add(mkLine(borderGeometry(zoneId), 0.25, { color: 0x9bfaff }));
 
   const geo = new THREE.BufferGeometry();
   geo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
@@ -526,12 +533,9 @@ function buildBrain() {
     const gg = new THREE.BufferGeometry();
     gg.setAttribute('position', new THREE.Float32BufferAttribute(gp, 3));
     gg.setAttribute('color', new THREE.Float32BufferAttribute(gc, 3));
-    group.add(new THREE.LineSegments(gg, new THREE.LineBasicMaterial({
-      vertexColors: true, transparent: true, opacity: 0.4,
-      blending: THREE.AdditiveBlending, depthWrite: false
-    })));
+    group.add(mkLine(gg, 0.4, { vertexColors: true }));
   }
-  brain = { group, aAct, aCell, points, pick };
+  brain = { group, aAct, aCell, points, pick, lineMats };
 
   // ── HUD / legends ──
   const layerZones = zones.filter(z => z.kind === 'layer').length;
@@ -738,6 +742,18 @@ for (const [id, key] of [['idleBr', 'uIdle'], ['actBr', 'uActive']]) {
     uniforms[key].value = parseFloat(el.value);
     val.textContent = (+el.value).toFixed(2);
     store.set('ns_' + id, el.value);
+  };
+  el.oninput = apply; apply();
+}
+{
+  const el = $('lineBr'), val = $('lineBrV');
+  const saved = parseFloat(store.get('ns_lineBr', '1'));
+  if (isFinite(saved)) el.value = saved;
+  const apply = () => {
+    lineBr = parseFloat(el.value);
+    val.textContent = lineBr.toFixed(2);
+    store.set('ns_lineBr', el.value);
+    if (brain) brain.lineMats.forEach(m => { m.opacity = m.userData.base * lineBr; });
   };
   el.oninput = apply; apply();
 }
