@@ -26,6 +26,7 @@
     border-radius:3px; padding:4px 6px; font:inherit; outline:none; }
   input:focus, textarea:focus { border-color:var(--cyan); box-shadow:0 0 8px rgba(47,243,255,.4); }
   #endpoint { width:150px; }
+  input[type=range] { width:90px; vertical-align:middle; accent-color:var(--cyan); }
   .legend { display:flex; gap:8px; margin-top:8px; font-size:10px; flex-wrap:wrap; }
   #componentLegend { opacity:.75; }
   .legend span { white-space:nowrap; }
@@ -111,6 +112,10 @@
   <div class="sep"></div>
   <div id="bandLegend" class="legend"></div>
   <div id="componentLegend" class="legend"></div>
+  <div class="row" style="margin-top:8px"><label>idle brightness</label>
+    <span><input id="idleBr" type="range" min="0" max="3" step="0.05" value="1"> <b id="idleBrV">1.00</b></span></div>
+  <div class="row"><label>active brightness</label>
+    <span><input id="actBr" type="range" min="0" max="3" step="0.05" value="1"> <b id="actBrV">1.00</b></span></div>
   <div class="row" style="margin-top:8px"><label>layout</label>
     <span><button id="layBtn" class="mini on">layers</button> <button id="memBtn" class="mini">memory</button></span>
   </div>
@@ -228,7 +233,9 @@ const uniforms = {
   uPixel: { value: renderer.getPixelRatio() },
   uFront: { value: -99 },
   uFrontAmp: { value: 0 },
-  uWaveCol: { value: new THREE.Color('#2ff3ff') }
+  uWaveCol: { value: new THREE.Color('#2ff3ff') },
+  uIdle:   { value: 1.0 },   // idle particle brightness (HUD slider)
+  uActive: { value: 1.0 }    // active particle brightness (HUD slider)
 };
 
 const vert = /* glsl */`
@@ -250,7 +257,7 @@ const vert = /* glsl */`
   }`;
 
 const frag = /* glsl */`
-  uniform vec3 uWaveCol;
+  uniform vec3 uWaveCol; uniform float uIdle; uniform float uActive;
   varying float vAct; varying vec3 vColor; varying float vFace; varying float vFront;
   void main(){
     vec2 c = gl_PointCoord - 0.5;
@@ -263,9 +270,9 @@ const frag = /* glsl */`
     float back = 0.35 + 0.65 * smoothstep(-0.55, 0.45, vFace);
     float a = clamp(vAct, 0.0, 1.0);
     // idle vertices: dim but always visible; active ones brighten and bloom
-    vec3 col = mix(base * 0.6, hot, a) * (0.8 + vAct * 3.4);
+    vec3 col = mix(base * 0.6, hot, a) * (0.8 * uIdle + vAct * 3.4 * uActive);
     col = mix(col, uWaveCol * 2.2, clamp(vFront, 0.0, 1.0) * 0.30);
-    gl_FragColor = vec4(col, (0.75 + vAct * 1.2) * core * back);
+    gl_FragColor = vec4(col, (0.75 * uIdle + vAct * 1.2 * uActive) * core * back);
   }`;
 
 function formatBytes(bytes) {
@@ -722,6 +729,18 @@ function stepEngine(dt, now) {
 }
 
 /* ───────────────────────── controls / HUD ───────────────────────── */
+// brightness sliders -> shader uniforms (remembered between visits)
+for (const [id, key] of [['idleBr', 'uIdle'], ['actBr', 'uActive']]) {
+  const el = $(id), val = $(id + 'V');
+  const saved = parseFloat(store.get('ns_' + id, '1'));
+  if (isFinite(saved)) el.value = saved;
+  const apply = () => {
+    uniforms[key].value = parseFloat(el.value);
+    val.textContent = (+el.value).toFixed(2);
+    store.set('ns_' + id, el.value);
+  };
+  el.oninput = apply; apply();
+}
 $('layBtn').onclick = () => { viz.mode = 'layers'; $('layBtn').classList.add('on'); $('memBtn').classList.remove('on'); buildBrain(); };
 $('memBtn').onclick = () => { viz.mode = 'memory'; $('memBtn').classList.add('on'); $('layBtn').classList.remove('on'); buildBrain(); };
 
