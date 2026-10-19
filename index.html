@@ -263,9 +263,9 @@ const frag = /* glsl */`
     float back = 0.35 + 0.65 * smoothstep(-0.55, 0.45, vFace);
     float a = clamp(vAct, 0.0, 1.0);
     // idle vertices: dim but always visible; active ones brighten and bloom
-    vec3 col = mix(base * 0.38, hot, a) * (0.55 + vAct * 3.6);
+    vec3 col = mix(base * 0.6, hot, a) * (0.8 + vAct * 3.4);
     col = mix(col, uWaveCol * 2.2, clamp(vFront, 0.0, 1.0) * 0.30);
-    gl_FragColor = vec4(col, (0.55 + vAct * 1.3) * core * back);
+    gl_FragColor = vec4(col, (0.75 + vAct * 1.2) * core * back);
   }`;
 
 function formatBytes(bytes) {
@@ -400,8 +400,9 @@ function buildBrain() {
   const zoneId = new Int16Array(nodeCount);    // continent id -> continent borders
 
   const nodeAt = (lat, lon) => 1 + (lat - 1) * gridLon + (lon % gridLon);
-  const warpedU = (u, v) => ((u + 0.010 * Math.sin(2*Math.PI*(2.4*v + 0.13))) % 1 + 1) % 1;
-  const warpedV = (v, u) => Math.max(0, Math.min(0.999999, v + 0.010 * Math.sin(2*Math.PI*(2.1*u + 0.37))));
+  // no coastline warp: it only produced jagged stair-step borders; clean rings read better
+  const warpedU = (u, v) => ((u % 1) + 1) % 1;
+  const warpedV = (v, u) => Math.max(0, Math.min(0.999999, v));
 
   // Map a (u, v) position on the sphere to a cell index and color
   function cellFor(u, v) {
@@ -496,6 +497,33 @@ function buildBrain() {
     for (const s of z.slices) { if (u < s.u1) { sub = s; break; } }
     return { z, sub };
   };
+  // Graticule: smooth latitude rings + meridians over the WHOLE sphere,
+  // tinted by whichever region each segment sits in (so embed/out/vis get lines too)
+  {
+    const N_LAT = 48, N_LON = 72, STEPS = 160, RG = R * 1.003;
+    const gp = [], gc = [];
+    const push = (a, th, u, v) => {
+      const rr = RG * Math.sin(a);
+      gp.push(rr * Math.cos(th), -RG * Math.cos(a), rr * Math.sin(th));
+      const c = pick(u, v).sub.colorObj;
+      gc.push(c.r * 0.55, c.g * 0.55, c.b * 0.55);
+    };
+    for (let i = 1; i < N_LAT; i++) {
+      const v = i / N_LAT, a = Math.acos(1 - 2 * v);
+      for (let s = 0; s < STEPS; s++) for (const k of [s, s + 1]) { const u = k / STEPS; push(a, u * Math.PI * 2, Math.min(u, 0.999999), v); }
+    }
+    for (let j = 0; j < N_LON; j++) {
+      const u = j / N_LON, th = u * Math.PI * 2;
+      for (let s = 0; s < STEPS; s++) for (const k of [s, s + 1]) { const v = Math.min(0.999999, k / STEPS); push(Math.acos(1 - 2 * v), th, u, v); }
+    }
+    const gg = new THREE.BufferGeometry();
+    gg.setAttribute('position', new THREE.Float32BufferAttribute(gp, 3));
+    gg.setAttribute('color', new THREE.Float32BufferAttribute(gc, 3));
+    group.add(new THREE.LineSegments(gg, new THREE.LineBasicMaterial({
+      vertexColors: true, transparent: true, opacity: 0.4,
+      blending: THREE.AdditiveBlending, depthWrite: false
+    })));
+  }
   brain = { group, aAct, aCell, points, pick };
 
   // ── HUD / legends ──
