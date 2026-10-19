@@ -249,13 +249,16 @@ const frag = /* glsl */`
     vec2 c = gl_PointCoord - 0.5;
     float d = length(c);
     if(d > 0.5) discard;
-    float core = pow(smoothstep(0.5, 0.0, d), 1.6);
+    // 1 - smoothstep(0,0.5,d): well-defined on every GPU (reversed edges are undefined in GLSL)
+    float core = pow(1.0 - smoothstep(0.0, 0.5, d), 1.6);
     vec3 base = vColor;
     vec3 hot = mix(base, vec3(1.0), 0.65);
-    float back = 0.3 + 0.7 * smoothstep(-0.55, 0.45, vFace);
-    vec3 col = mix(base * 0.7, hot, clamp(vAct,0.0,1.0)) * (0.9 + vAct*3.2);
+    float back = 0.35 + 0.65 * smoothstep(-0.55, 0.45, vFace);
+    float a = clamp(vAct, 0.0, 1.0);
+    // idle vertices: dim but always visible; active ones brighten and bloom
+    vec3 col = mix(base * 0.38, hot, a) * (0.55 + vAct * 3.6);
     col = mix(col, uWaveCol * 2.2, clamp(vFront, 0.0, 1.0) * 0.30);
-    gl_FragColor = vec4(col, (0.75 + vAct*1.25) * core * back);
+    gl_FragColor = vec4(col, (0.55 + vAct * 1.3) * core * back);
   }`;
 
 function formatBytes(bytes) {
